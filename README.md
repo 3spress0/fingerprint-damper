@@ -10,6 +10,7 @@
   <img alt="web-ext lint" src="https://img.shields.io/badge/web--ext%20lint-0%20errors%200%20warnings-3fb950">
   <img alt="No dependencies" src="https://img.shields.io/badge/runtime%20deps-none-3fb950">
   <img alt="Data collection" src="https://img.shields.io/badge/data%20collected-none-3fb950">
+  <img alt="License GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue">
 </p>
 
 ---
@@ -179,7 +180,22 @@ src/popup.html|js             per-page activity + pause toggle
 src/options.html|js           feature switches
 test/selftest.html|js         before/after verification page
 package/                      built .zip
+LICENSE                       GNU GPL v3
 ```
 
 `inject.js` keeps every original descriptor in a `restore[]` array, so allowlisting genuinely hands
 the site its real browser back rather than layering more lies on top.
+
+---
+
+## License
+
+**GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). Full text in [LICENSE](LICENSE).
+
+This is a strong-copyleft license, chosen deliberately. Anyone may use, study, modify and
+redistribute this — but if they distribute a modified version, or build something on top of it,
+**they must release their source under the same license too.** A privacy tool whose derivatives can
+be closed up is a privacy tool waiting to be quietly turned into its opposite; the whole point of
+this extension is that you can read exactly what it does to your browser.
+
+Copyright (C) 2026 Fingerprint Damper contributors.
