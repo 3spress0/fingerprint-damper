@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 13.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: 20px 22px; max-width: 560px;
+    background: Canvas; color: CanvasText;
+  }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { opacity: .65; font-size: 12px; margin-bottom: 20px; }
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+    opacity: .55; margin: 22px 0 8px; font-weight: 600;
+  }
+  label {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 8px 10px; border-radius: 7px; cursor: pointer;
+  }
+  label:hover { background: color-mix(in srgb, CanvasText 6%, transparent); }
+  input[type=checkbox] { margin-top: 2px; flex: none; }
+  .t { font-weight: 500; }
+  .d { font-size: 11.5px; opacity: .62; }
+  .warn {
+    border-left: 3px solid #d98b2b;
+    padding: 8px 12px; margin: 10px 0 0;
+    background: color-mix(in srgb, #d98b2b 10%, transparent);
+    font-size: 12px; border-radius: 0 6px 6px 0;
+  }
+  #saved {
+    position: fixed; right: 20px; bottom: 18px;
+    background: #2b5fd9; color: #fff; padding: 6px 12px;
+    border-radius: 6px; font-size: 12px; opacity: 0;
+    transition: opacity .25s; pointer-events: none;
+  }
+  #saved.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <h1>Fingerprint Damper</h1>
+  <div class="sub">Changes apply to pages loaded from now on.</div>
+
+  <h2>Enabled by default — low breakage risk</h2>
+  <div id="safe"></div>
+
+  <h2>Opt-in — known to break things</h2>
+  <div id="risky"></div>
+  <div class="warn">
+    Timezone and language spoofing will misdate calendars, booking sites and
+    delivery estimates, and will flip some sites into the wrong language.
+    Turn these on only if you accept that.
+  </div>
+
+  <div id="saved">Saved</div>
+  <script src="options.js"></script>
+</body>
+</html>

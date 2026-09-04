@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fingerprint Damper — self test</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         max-width: 780px; margin: 40px auto; padding: 0 20px; }
+  h1 { font-size: 19px; margin-bottom: 4px; }
+  p.sub { opacity: .7; margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin-top: 18px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #8884;
+           vertical-align: top; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; opacity: .6; }
+  td.k { white-space: nowrap; font-weight: 500; width: 200px; }
+  td.v { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+         word-break: break-all; }
+  .tag { display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 99px;
+         margin-left: 6px; vertical-align: middle; }
+  .damped { background: #2b5fd9; color: #fff; }
+  .exposed { background: #c8442e; color: #fff; }
+  .note { background: #8881; padding: 12px 14px; border-radius: 8px; margin-top: 22px;
+          font-size: 13px; }
+  code { background: #8882; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>Fingerprint Damper — self test</h1>
+<p class="sub">Load this once with the extension off, once with it on, and compare.</p>
+
+<table>
+  <thead><tr><th>Surface</th><th>Value seen by this page</th></tr></thead>
+  <tbody id="out"></tbody>
+</table>
+
+<div class="note">
+  <strong>What to expect when it is working:</strong> the GPU string becomes
+  <code>Mozilla</code>, the canvas and audio hashes differ from the un-damped run
+  (and differ again on a different site), battery reads full, cores read 8,
+  window position reads 0, and the notification prompt resolves to
+  <code>default</code> without ever showing a dialog.
+  Reload twice with the extension on — the hashes should stay <em>identical</em>
+  between reloads. Stability is the point; a hash that changes every reload is
+  itself a tracking signal.
+</div>
+
+<script src="selftest.js"></script>
+</body>
+</html>

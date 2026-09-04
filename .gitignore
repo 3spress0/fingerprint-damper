@@ -1,0 +1,8 @@
+node_modules/
+package/
+dist/
+web-ext-artifacts/
+package-lock.json
+*.xpi
+*.zip
+.DS_Store

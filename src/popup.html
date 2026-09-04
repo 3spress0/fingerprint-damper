@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; width: 300px;
+    background: Canvas; color: CanvasText;
+  }
+  header {
+    padding: 12px 14px 10px;
+    border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+  }
+  h1 { font-size: 13px; margin: 0 0 2px; letter-spacing: .2px; }
+  .origin {
+    font-size: 11px; opacity: .65;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  section { padding: 11px 14px; }
+  .row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 3px 0;
+  }
+  .row .n { font-variant-numeric: tabular-nums; opacity: .8; }
+  .empty { opacity: .55; font-style: italic; padding: 3px 0; }
+  .sep { border-top: 1px solid color-mix(in srgb, CanvasText 12%, transparent); }
+  button {
+    width: 100%; padding: 8px 10px; font: inherit; cursor: pointer;
+    border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+    background: color-mix(in srgb, CanvasText 6%, transparent); color: inherit;
+  }
+  button:hover { background: color-mix(in srgb, CanvasText 12%, transparent); }
+  button.on { border-color: #d98b2b; background: color-mix(in srgb, #d98b2b 18%, transparent); }
+  .foot { padding: 0 14px 12px; }
+  a { color: inherit; font-size: 11px; opacity: .7; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+       opacity: .55; margin: 0 0 6px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Fingerprint Damper</h1>
+    <div class="origin" id="origin">—</div>
+  </header>
+
+  <section>
+    <h2>Intercepted on this page</h2>
+    <div id="counts"></div>
+  </section>
+
+  <section class="sep">
+    <button id="allow">Loading…</button>
+  </section>
+
+  <div class="foot"><a href="#" id="opts">Settings…</a></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
