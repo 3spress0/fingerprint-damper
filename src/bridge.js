@@ -75,7 +75,8 @@
     }, 700);
   });
 
-  // Live-apply changes made in the popup without needing a reload.
+  // Live-apply page API settings. New CSP/sandbox policies require a fresh
+  // document response; this broadcast does not retrofit them onto loaded pages.
   api.runtime.onMessage.addListener((msg) => {
     if (!msg || msg.type !== 'configChanged') return;
     delivered = false;

@@ -204,7 +204,7 @@ Promise.all([globalThis.__fpdProbeValues(), probeWorkers()]).then(([page, worker
     const value = result.status === 'ok'
       ? `locale ${v.locale}; zone ${v.timezone}; cores ${v.cores}; canvas ${v.canvas}; math ${v.math}`
       : result.status + ': ' + (result.message || 'API not exposed');
-    rows.push(['Worker ' + result.kind + ' (unprotected)', value, null]);
+    rows.push(['Worker ' + result.kind + ' (not API-patched)', value, null]);
   }
   document.getElementById('scope-probes').textContent = JSON.stringify({ page, workers }, null, 2);
   paint();

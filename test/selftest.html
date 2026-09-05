@@ -56,7 +56,8 @@
 
 <details class="note">
   <summary>Window / worker probe details (stay on this page)</summary>
-  <p>Workers are deliberately unprotected. A matching hash, unavailable API, load error,
+  <p>Workers are not API-patched; global lockdown may block their creation on HTTP pages.
+  A matching hash, unavailable API, load error,
   or timeout is not proof of protection. Worker loading may require a local HTTP server;
   see <code>test/README.md</code>.</p>
   <pre id="scope-probes" style="white-space:pre-wrap;overflow-wrap:anywhere">Pending…</pre>

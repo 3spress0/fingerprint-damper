@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fingerprint Damper",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Blunts browser fingerprinting and push-notification ad SDKs at the JavaScript API level. Complements, rather than duplicates, an ad blocker.",
 
   "browser_specific_settings": {
@@ -23,7 +23,7 @@
   "host_permissions": ["<all_urls>"],
 
   "background": {
-    "scripts": ["src/background.js"]
+    "scripts": ["src/lockdown.js", "src/background.js"]
   },
 
   "content_scripts": [

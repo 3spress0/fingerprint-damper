@@ -55,11 +55,14 @@ identities are preserved until the option is enabled, avoiding disabled-by-defau
 wrappers around hot JIT intrinsics. Turning it off restores the original descriptors;
 allowlisting also retires cached rounding wrappers until reload.
 
-## Worker policy: preserve execution, diagnose the gap
+## Default worker policy: preserve execution, diagnose the gap
 
 No production Worker/SharedWorker constructor or worker response is rewritten.
 The diagnostic fixtures use the same passive probes in the window and in fresh,
 short-lived workers; they do **not** inject `src/inject.js` into those workers.
+The separate [v1.5 global lockdown](lockdown.md) can opt in to browser-enforced denial
+of new worker execution on covered documents. This is not worker API normalization;
+the table below describes workers that are allowed to run (including existing workers).
 
 | Global | Current coverage | Diagnostic coverage |
 |---|---|---|
@@ -83,14 +86,16 @@ credentials, message ordering, transferable ownership, and shared-worker identit
 Rewriting responses would require a new network interception design/permissions
 and careful handling of caching and policy. Existing service workers/worklets also
 cannot be retroactively patched by wrapping a window constructor. No CSP is relaxed
-and no worker execution is blocked just to claim coverage.
+and default behavior does not block workers just to claim transparent coverage.
+Opt-in lockdown explicitly trades execution for restrictions, with substantial breakage.
 
 ## TLS / HTTP: no implementation in this layer
 
 Page-world API patches cannot select the browser's TLS ClientHello, ALPN, JA3/JA4
 inputs, HTTP/2 settings or exact header serialization/order. This extension's DNR
-rules block requests; they do not standardize that transport behavior. Changing a
-few header values is not equivalent to controlling the network stack.
+rules can block requests and the new lockdown controls can remove selected cookie/identity
+headers. They do not standardize the transport stack. Changing a few header values
+is not equivalent to controlling the network stack.
 
 For HTTPS, an ordinary pass-through VPN, SOCKS proxy or CONNECT tunnel generally
 still forwards the browser's TLS handshake. A TLS-terminating relay with a different

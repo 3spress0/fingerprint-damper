@@ -29,6 +29,10 @@
     background: color-mix(in srgb, #d98b2b 10%, transparent);
     font-size: 12px; border-radius: 0 6px 6px 0;
   }
+  button { font: inherit; padding: 8px 10px; margin: 8px 6px 4px 0; cursor: pointer; }
+  button:disabled, input:disabled { cursor: wait; }
+  #policy-status, #save-error { font-size: 12px; overflow-wrap: anywhere; }
+  #save-error { color: #d34242; }
   #saved {
     position: fixed; right: 20px; bottom: 18px;
     background: #2b5fd9; color: #fff; padding: 6px 12px;
@@ -40,7 +44,7 @@
 </head>
 <body>
   <h1>Fingerprint Damper</h1>
-  <div class="sub">Changes apply to pages loaded from now on.</div>
+  <div class="sub">Reload affected pages after changes. HTTP/CSP locks require a fresh load (bypass cache).</div>
 
   <h2>Enabled by default — low breakage risk</h2>
   <div id="safe"></div>
@@ -53,7 +57,22 @@
     Turn these on only if you accept that.
   </div>
 
-  <div id="saved">Saved</div>
+  <h2>Global lockdown — experimental, extreme breakage</h2>
+  <div class="warn">
+    All off by default. Browser-enforced rules, not fake API values. These switches apply globally to eligible
+    HTTP(S) pages and requests, including API-paused sites. Many sites become static or blank.
+    No claim of zero information: IP/TLS, the initial visit, old workers/connections,
+    cached/service-worker responses and stored data remain concerns. No data is erased.
+  </div>
+  <div id="lockdown"></div>
+  <button id="lock-max" type="button">Enable all lockdown controls…</button>
+  <button id="lock-off" type="button">Turn off all lockdown</button>
+  <p id="policy-status" role="status" aria-live="polite">Checking browser rules…</p>
+  <p class="d">Per-site API pause does not disable global locks. Turning them off only changes
+    future loads; reload affected tabs. If rule removal fails, disable the extension in about:addons.</p>
+  <p id="save-error" role="alert"></p>
+  <div id="saved" role="status">Saved — reload affected pages</div>
+  <script src="lockdown.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

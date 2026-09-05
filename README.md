@@ -20,7 +20,9 @@
 ---
 
 Ad blockers work at the **network layer** — they stop a request being made. This works at the
-**API layer** — it changes what a script is able to read once it is already running.
+**API layer** by default — it changes what a script reads once it is running. An additional,
+**default-off global lockdown tier** uses browser-enforced network/CSP rules to deny execution
+and requests rather than spoof values.
 
 That gap is not theoretical. It came out of a live teardown of a YouTube-converter site whose
 deobfuscated PropellerAds SDK was found reading GPU model, battery level, screen geometry,
@@ -126,7 +128,33 @@ formatter objects and already-returned measurement snapshots keep their values; 
 settings change to clear a site's cached objects. These controls reduce particular observations,
 not all ways of inferring a machine's fonts, locale, or time zone. Previously returned voice/device
 lists remain readable too. See [coverage and trust boundaries](docs/coverage.md) for the exact Math
-surface, passive-API caveats, worker policy, and why TLS/HTTP fingerprinting is not implemented here.
+surface, passive-API caveats and worker policy. TLS/HTTP-stack normalization remains out of scope;
+selected HTTP headers can now be removed with the separate lockdown tier.
+
+---
+
+## Global lockdown — experimental, extreme breakage
+
+All **eight controls are off by default**, separate from the existing API options:
+
+- Block site JavaScript (inline and external) instead of trying to emulate every API.
+- Force a browser **opaque-origin document sandbox**, without script/same-origin escape tokens.
+- Block new workers and service-worker registrations on covered documents.
+- Block embedded frame/object loads.
+- Block fetch/XHR, new WebSockets, beacons, pings and CSP reports.
+- Text-only loading: block eligible secondary requests, scripts, media/fonts and external styling.
+- Strip outgoing/incoming network cookies, without clearing existing browser data.
+- Remove selected identity headers (UA, language, referrer, known UA client hints).
+
+These are **global kill switches**, including on API-paused sites. Settings has a confirmed
+**Enable all lockdown controls** preset; Settings and the popup both have **Turn off all lockdown**.
+Reload affected tabs (bypass cache) to apply/release CSP. No automatic tab reloads or data deletion.
+
+The browser enforces eligible rules outside the spoofable page-world event channel. Server CSP is
+appended to, never replaced or weakened. This does **not** promise that a website gets nothing:
+the initial request/IP/TLS, URLs, old contexts, stored data and cached/service-worker responses
+remain concerns. It is not an OS sandbox, proxy or transport firewall. Use a fresh test profile.
+See [lockdown controls, limits and recovery](docs/lockdown.md). **Native Firefox validation is pending.**
 
 ---
 
@@ -161,6 +189,7 @@ that changes every reload means the noise is per-call, which is worse than no pr
 For dependency-free automated regression tests (Node.js 18+), run
 `node --test test/*.test.cjs`. These use DOM doubles, real Node Intl/Math, and isolated Node harnesses
 for the diagnostic worker scripts (not Firefox's worker loader/CSP).
+The new rule/settings/UI tests use mocked extension APIs, not native DNR enforcement.
 `test/browser-regression.html` exercises the patches against real browser APIs with native
 references captured first; open it with the installed extension **disabled**. See
 [test/README.md](test/README.md) for locale-matrix commands, font-probe interpretation and the
@@ -170,14 +199,20 @@ Local-font and worker probes are explicitly labelled **unprotected**. Worker loa
 a local HTTP server; a failure or matching value is not proof of protection. The notification
 request test now requires an explicit button click rather than running automatically.
 
+For lockdown, use the separate [HTTP fixture/checklist](test/README.md#global-lockdown-http-integration).
+A file-based or JS-driven self-test cannot prove that scripts were blocked before execution.
+
 ---
 
 ## Using it
 
 Toolbar badge shows how many fingerprint reads were intercepted on the current page. Click for a
-breakdown and a **Pause on this site** button (per-origin, persists, reloads the tab).
+breakdown and a **Pause API patches on this site** button (per-origin, persists, reloads the tab).
+The badge counts page API reports, not DNR/network blocks.
 
-If a site misbehaves, pause it there rather than disabling a protection globally.
+API pause never disables the global ad-network switch or global lockdown. If lockdown breaks a
+site, turn off the relevant global switch or use **Turn off all lockdown**, then reload. If removal
+fails, disable the extension in `about:addons`; the UI reports failures rather than claiming success.
 
 ---
 
@@ -193,7 +228,8 @@ If a site misbehaves, pause it there rather than disabling a protection globally
   settings combination. These controls reduce particular observations, not guarantee anonymity.
 - **Page-world channels are not a security boundary.** The configuration and stats events are
   page-visible; hostile page code can spoof configuration events or replace hooks. Turning off
-  *Count activity* reduces stats traffic, but does not make the controls tamper-proof.
+  *Count activity* reduces stats traffic, but does not make those API hooks tamper-proof. The new
+  browser-enforced lockdown rules are separate; page events cannot change them.
 - **Not a substitute for Tor Browser or full `resistFingerprinting`.** Those give a far larger
   anonymity set at a far higher usability cost. If you want the strongest available option in
   Firefox itself, `privacy.resistFingerprinting` exists — it will break more, and this extension
@@ -211,7 +247,9 @@ If a site misbehaves, pause it there rather than disabling a protection globally
 - **Worker and worklet globals are unprotected.** Content scripts run in window realms, not
   dedicated/shared/service workers or worklets. Any relevant API exposed in those globals — for
   example OffscreenCanvas/WebGL, worker font APIs, Intl or worker navigator fields — bypasses the
-  window patches. Not every window API exists in a worker. No `Worker` constructor shim is used:
+  window patches. The default remains native execution, but the new opt-in CSP worker/script
+  blocks can deny new workers on covered documents; they do not normalize worker APIs or stop
+  existing workers. Not every window API exists in a worker. No `Worker` constructor shim is used:
   a partial bootstrap would not close the gap and could break CSP, module loading or worker
   identity/lifecycle semantics. Broader coverage needs a different architecture or browser-level
   protections, not another window-prototype patch.
@@ -222,7 +260,8 @@ If a site misbehaves, pause it there rather than disabling a protection globally
 - **Math rounding is experimental, not engine standardisation.** Exact identities and numerical
   algorithms can change. Arithmetic operators, WebAssembly, unpatched globals and rounding-boundary
   differences remain available to probes. It is deliberately off by default.
-- **TLS/HTTP-level fingerprinting remains untouched.** Page-world hooks cannot control the TLS
+- **TLS/HTTP-stack fingerprinting remains outside scope.** Optional removal of selected HTTP
+  headers is not transport normalization. Page-world hooks cannot control the TLS
   ClientHello or HTTP/2 stack/header order. An ordinary pass-through VPN/SOCKS/CONNECT proxy does not
   replace the browser's TLS handshake. No proxy, CA trust or certificate-validation changes are
   made; see [the transport boundary](docs/coverage.md#tls--http-no-implementation-in-this-layer).
@@ -236,7 +275,8 @@ manifest.json                 MV3, Firefox event page (not a service worker)
 rules/adnets.json             declarativeNetRequest blocklist
 src/inject.js                 MAIN world, document_start — all API patches
 src/bridge.js                 ISOLATED world — the only link to browser.*
-src/background.js             settings, allowlist, session salt, badge
+src/background.js             settings, API allowlist, network-policy lifecycle, badge
+src/lockdown.js               pure global DNR/CSP policy definitions (extension pages only)
 src/popup.html|js             per-page activity + pause toggle
 src/options.html|js           feature switches
 test/selftest.html|js         before/after verification page
@@ -246,13 +286,16 @@ test/worker-probe*            worker entries/driver (not production protection)
 test/*.test.cjs               dependency-free regression tests
 test/browser-regression.*     native-browser regression fixture
 test/README.md                verification instructions and coverage limits
+test/lockdown-server.cjs      repository-only HTTP fixture for native lockdown checks
 docs/coverage.md             passive/Math coverage, workers and transport boundaries
+docs/lockdown.md             global kill switches, enforcement limits and recovery
 package/                      built .zip
 LICENSE                       GNU GPL v3
 ```
 
 `inject.js` keeps every original descriptor in a `restore[]` array, so allowlisting genuinely hands
-the site its real browser back rather than layering more lies on top.
+the site its native page API descriptors back. That is separate from global lockdown/CSP and
+network rules, which are not removed by API allowlisting.
 
 ---
 
