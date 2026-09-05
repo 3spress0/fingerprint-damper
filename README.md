@@ -97,7 +97,7 @@ carry a warning in the settings UI.
 | CPU cores | `hardwareConcurrency` → 8. |
 | Battery | `getBattery()` → always full and charging. Level plus discharge time is a startlingly good short-term cross-site correlator. |
 | Push guard | `Notification.requestPermission()` resolves `"default"` with **no dialog**; service workers matching known ad patterns are refused. |
-| Network block | DNR rules for `9hito.com`, `zdzhk.com`, `kbvcd.com`, `rtmark.net`, `dulotadtor.com`, `abunownon.com`, `dawac.com`, `10zon.com`, `kocmg.com`, `blxwnnw.com`. |
+| Network block | DNR rules for `9hito.com`, `zdzhk.com`, `kbvcd.com`, `rtmark.net`, `dulotadtor.com`, `abunownon.com`, `dawac.com`, `10zon.com`, `kocmg.com`, `blxwnnw.com` (from the original teardown), plus `lzrikate.com`, `pheegoab.click`, `phenver.com`, `pushno.com`, sourced from [LanikSJ/ubo-filters' PropellerAds Domains Filter List](https://github.com/LanikSJ/ubo-filters) (MIT). |
 
 Note `requestPermission` returns `"default"`, not `"denied"`. "Denied" is a sticky, distinguishable
 state; "default" reads as *the user dismissed it*, which is both commonplace and unremarkable.
