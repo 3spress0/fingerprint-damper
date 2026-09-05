@@ -21,7 +21,7 @@
  *      Per-call randomness breaks image editors and is itself a signal.
  *   2. Never return null/undefined where a site expects a string. We return
  *      plausible generic values so feature-detection still succeeds.
- *   3. Only touch APIs with high fingerprint entropy and low functional use.
+ *   3. Keep defaults conservative; higher-breakage surfaces are opt-in.
  *      navigator.plugins and maxTouchPoints are deliberately LEFT ALONE:
  *      ad SDKs use "plugins.length === 0" as a headless-bot signal, so
  *      emptying it makes you MORE conspicuous, not less.
@@ -48,6 +48,7 @@
     concurrency: true,
     battery: true,
     pushGuard: true,
+    clientRects: false, // opt-in: affects positioning, selection, and hit-testing
     timezone: false,   // opt-in: breaks calendars/booking flows
     language: false,   // opt-in: breaks localisation
     webrtc: false,      // opt-in: breaks P2P calls with no TURN fallback
@@ -242,6 +243,142 @@
       });
   }
 
+  // ======================================================= 1b. TEXT METRICS
+  // Text metrics do not pass through pixel readback. Stable, tiny jitter changes
+  // exact metric hashes, but does NOT hide font availability from probes that
+  // round measurements or compare substantially different font metrics.
+  const TEXT_METRIC_FIELDS = [
+    'width', 'actualBoundingBoxLeft', 'actualBoundingBoxRight',
+    'actualBoundingBoxAscent', 'actualBoundingBoxDescent',
+    'fontBoundingBoxAscent', 'fontBoundingBoxDescent'
+  ];
+
+  for (const ctx2d of [window.CanvasRenderingContext2D, window.OffscreenCanvasRenderingContext2D]) {
+    if (!ctx2d || !ctx2d.prototype.measureText) continue;
+    patchMethod(ctx2d.prototype, 'measureText', (orig) =>
+      function measureText(text) {
+        const m = orig.apply(this, arguments);
+        if (active && cfg.canvas) {
+          try {
+            const seed = baseSeed() ^ fnv1a((this.font || '') + '|' + text);
+            const rnd = mulberry32(seed);
+            for (const f of TEXT_METRIC_FIELDS) {
+              if (typeof m[f] !== 'number') continue;
+              Object.defineProperty(m, f, {
+                value: m[f] + (rnd() - 0.5) * 0.02, configurable: true, enumerable: true
+              });
+            }
+            report('canvas');
+          } catch (_) {}
+        }
+        return m;
+      });
+  }
+
+  // OffscreenCanvas main-thread pixel readback. Same noise budget as
+  // HTMLCanvasElement above. Worker code has a separate global: none of its
+  // APIs are patched here, not just its canvas APIs. See README limitations.
+  const rawOffscreenGetImageData = window.OffscreenCanvasRenderingContext2D
+    ? OffscreenCanvasRenderingContext2D.prototype.getImageData
+    : null;
+
+  if (rawOffscreenGetImageData) {
+    patchMethod(OffscreenCanvasRenderingContext2D.prototype, 'getImageData', (orig) =>
+      function getImageData(sx, sy, sw, sh) {
+        const res = orig.apply(this, arguments);
+        if (active && cfg.canvas) {
+          try {
+            noiseImageData(res, baseSeed() ^ fnv1a(sw + 'x' + sh));
+            report('canvas');
+          } catch (_) {}
+        }
+        return res;
+      });
+  }
+
+  if (window.OffscreenCanvas && OffscreenCanvas.prototype.convertToBlob) {
+    patchMethod(OffscreenCanvas.prototype, 'convertToBlob', (orig) =>
+      function convertToBlob() {
+        if (active && cfg.canvas) {
+          try {
+            const w = this.width, h = this.height;
+            if (w && h && w * h <= 4000000) {
+              const copy = new OffscreenCanvas(w, h);
+              const ctx = copy.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(this, 0, 0);
+                // Bypass our getter so the copy receives only one noise pass.
+                const data = rawOffscreenGetImageData.call(ctx, 0, 0, w, h);
+                noiseImageData(data, baseSeed());
+                ctx.putImageData(data, 0, 0);
+                report('canvas');
+                return orig.apply(copy, arguments);
+              }
+            }
+          } catch (_) {}
+        }
+        return orig.apply(this, arguments);
+      });
+  }
+
+  // ====================================================== 1c. CLIENT RECTS
+  // Opt-in: these snapshots drive real positioning and hit-testing too. Dampen
+  // exact hashes, not layout itself; rounded/tolerant measurements can evade it.
+  // Mutate native DOMRect snapshots, not DOMRect/DOMRectList prototypes, so
+  // item(), iteration, JSON, branding and right/bottom relationships stay native.
+  function rectTransform(bounds) {
+    const { x, y, width, height } = bounds;
+    if (![x, y, width, height].every(Number.isFinite) || (!width && !height)) return null;
+    const rnd = mulberry32(baseSeed() ^ fnv1a([x, y, width, height].join('|')));
+    const dx = (rnd() - 0.5) * 0.02;
+    const dy = (rnd() - 0.5) * 0.02;
+    // Zero dimensions stay zero; even very small positive dimensions stay positive.
+    const dw = (rnd() - 0.5) * Math.min(0.02, Math.abs(width));
+    const dh = (rnd() - 0.5) * Math.min(0.02, Math.abs(height));
+    return { x, y, targetX: x + dx, targetY: y + dy,
+      scaleX: width ? (width + dw) / width : 1,
+      scaleY: height ? (height + dh) / height : 1 };
+  }
+
+  function transformRect(rect, transform) {
+    if (!transform) return;
+    rect.x = transform.targetX + (rect.x - transform.x) * transform.scaleX;
+    rect.y = transform.targetY + (rect.y - transform.y) * transform.scaleY;
+    rect.width *= transform.scaleX;
+    rect.height *= transform.scaleY;
+  }
+
+  if (window.DOMRect) {
+    for (const ctor of [window.Element, window.Range]) {
+      if (!ctor) continue;
+      const rawBounds = ctor.prototype.getBoundingClientRect;
+      if (typeof rawBounds !== 'function') continue;
+      patchMethod(ctor.prototype, 'getBoundingClientRect', (orig) =>
+        function getBoundingClientRect() {
+          const rect = orig.apply(this, arguments);
+          if (active && cfg.clientRects) {
+            try { transformRect(rect, rectTransform(rect)); report('clientRects'); } catch (_) {}
+          }
+          return rect;
+        });
+      patchMethod(ctor.prototype, 'getClientRects', (orig) =>
+        function getClientRects() {
+          const rects = orig.apply(this, arguments);
+          if (active && cfg.clientRects && rects.length) {
+            try {
+              // One transform per snapshot keeps multiline fragments coherent
+              // with the separately queried bounding rect, rather than jittering
+              // each fragment independently. Bypass the patched bounds method.
+              const transform = rectTransform(rawBounds.call(this));
+              for (let i = 0; i < rects.length; i++) transformRect(rects[i], transform);
+              report('clientRects');
+            } catch (_) {}
+          }
+          return rects;
+        });
+    }
+  }
+
   // ============================================================== 2. WEBGL
   // The single highest-entropy item in the SDK we analysed: the unmasked GPU
   // string. "Mozilla" is what Firefox's own resistFingerprinting reports, so
@@ -254,12 +391,16 @@
 
   for (const ctor of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
     if (!ctor) continue;
+    // A WebGL2 context claiming version "1.0" while answering WebGL2-only
+    // calls is its own tell, so report the version that matches the class
+    // actually being patched rather than a single hardcoded string.
+    const versionStr = ctor === window.WebGL2RenderingContext ? 'WebGL 2.0' : 'WebGL 1.0';
     patchMethod(ctor.prototype, 'getParameter', (orig) =>
       function getParameter(p) {
         if (active && cfg.webgl) {
           if (p === UNMASKED_VENDOR || p === GL_VENDOR) { report('webgl'); return 'Mozilla'; }
           if (p === UNMASKED_RENDERER || p === GL_RENDERER) { report('webgl'); return 'Mozilla'; }
-          if (p === GL_VERSION) { report('webgl'); return 'WebGL 1.0'; }
+          if (p === GL_VERSION) { report('webgl'); return versionStr; }
         }
         return orig.apply(this, arguments);
       });
@@ -310,22 +451,48 @@
   // to normalise. screen.width/height are left REAL by default: quantising
   // them is a genuine responsive-design breakage risk.
   if (window.Screen) {
+    // Capture real getters BEFORE patching so "off" genuinely means real,
+    // not a second flavour of fake. (Previous version returned 0 either way.)
+    const screenOrig = {};
+    for (const p of ['availWidth', 'availHeight', 'availLeft', 'availTop', 'colorDepth', 'pixelDepth']) {
+      const d = Object.getOwnPropertyDescriptor(Screen.prototype, p);
+      screenOrig[p] = d && d.get;
+    }
     patchGetter(Screen.prototype, 'availWidth', function () {
-      return (active && cfg.geometry) ? this.width : screenDesc('availWidth', this);
+      if (active && cfg.geometry) return this.width;
+      return screenOrig.availWidth ? screenOrig.availWidth.call(this) : this.width;
     });
     patchGetter(Screen.prototype, 'availHeight', function () {
-      return (active && cfg.geometry) ? this.height : screenDesc('availHeight', this);
+      if (active && cfg.geometry) return this.height;
+      return screenOrig.availHeight ? screenOrig.availHeight.call(this) : this.height;
     });
-    patchGetter(Screen.prototype, 'availLeft', function () { return (active && cfg.geometry) ? 0 : 0; });
-    patchGetter(Screen.prototype, 'availTop', function () { return (active && cfg.geometry) ? 0 : 0; });
-    patchGetter(Screen.prototype, 'colorDepth', function () { return (active && cfg.geometry) ? 24 : 24; });
-    patchGetter(Screen.prototype, 'pixelDepth', function () { return (active && cfg.geometry) ? 24 : 24; });
+    patchGetter(Screen.prototype, 'availLeft', function () {
+      if (active && cfg.geometry) return 0;
+      return screenOrig.availLeft ? screenOrig.availLeft.call(this) : 0;
+    });
+    patchGetter(Screen.prototype, 'availTop', function () {
+      if (active && cfg.geometry) return 0;
+      return screenOrig.availTop ? screenOrig.availTop.call(this) : 0;
+    });
+    patchGetter(Screen.prototype, 'colorDepth', function () {
+      if (active && cfg.geometry) return 24;
+      return screenOrig.colorDepth ? screenOrig.colorDepth.call(this) : 24;
+    });
+    patchGetter(Screen.prototype, 'pixelDepth', function () {
+      if (active && cfg.geometry) return 24;
+      return screenOrig.pixelDepth ? screenOrig.pixelDepth.call(this) : 24;
+    });
   }
-  function screenDesc() { return 0; }
 
   for (const [prop, fallback] of [['screenX', 0], ['screenY', 0], ['screenLeft', 0], ['screenTop', 0]]) {
     const host = windowHost(prop);
-    if (host) patchGetter(host, prop, function () { return (active && cfg.geometry) ? fallback : fallback; });
+    if (!host) continue;
+    const desc = Object.getOwnPropertyDescriptor(host, prop);
+    const origGet = desc && desc.get;
+    patchGetter(host, prop, function () {
+      if (active && cfg.geometry) return fallback;
+      return origGet ? origGet.call(this) : fallback;
+    });
   }
 
   for (const [outer, inner] of [['outerWidth', 'innerWidth'], ['outerHeight', 'innerHeight']]) {
@@ -404,26 +571,120 @@
   }
 
   // ==================================================== 7. OPT-IN SPOOFS
-  // Off by default. Both are real breakage risks, so the user opts in.
-  const realTZ = (() => {
-    try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (_) { return 'UTC'; }
-  })();
+  // Normalise default locale selection, not the engine's ICU/CLDR data. Explicit
+  // supported locales and explicit time zones remain the application's choice.
+  // Configure the real formatter, never just lie about its resolvedOptions().
+  if (window.Intl && Intl.getCanonicalLocales) {
+    const canonicalLocales = Intl.getCanonicalLocales;
 
-  if (window.Intl && Intl.DateTimeFormat) {
-    const origResolved = Intl.DateTimeFormat.prototype.resolvedOptions;
-    patchMethod(Intl.DateTimeFormat.prototype, 'resolvedOptions', () =>
-      function resolvedOptions() {
-        const o = origResolved.call(this);
-        if (active && cfg.timezone) { o.timeZone = 'UTC'; report('timezone'); }
-        return o;
+    function localeArguments(args, index = 0) {
+      const copy = Array.from(args);
+      if (active && cfg.language) {
+        // Native canonicalisation handles strings, arrays, array-like lists and
+        // invalid tags, and consumes user-supplied getters only once. Appending
+        // en-US also handles an explicit but unsupported locale's fallback.
+        const locales = canonicalLocales(copy[index]);
+        if (!locales.includes('en-US')) locales.push('en-US');
+        copy[index] = locales;
+        report('language');
+      }
+      return copy;
+    }
+
+    function defaultTimeZone(options) {
+      if (options === null) return options; // preserve the native TypeError
+      const source = options === undefined ? Object.create(null) : Object(options);
+      // A facade, not a Proxy of source: frozen { timeZone: undefined } must not
+      // violate Proxy invariants. Preserve inherited/non-enumerable options and
+      // getter receivers/order without spreading or mutating the caller's object.
+      return new Proxy(Object.create(null), {
+        get(_, key) {
+          const value = Reflect.get(source, key, source);
+          return key === 'timeZone' && value === undefined ? 'UTC' : value;
+        }
       });
+    }
+
+    function dateArguments(args) {
+      const copy = localeArguments(args);
+      if (active && cfg.timezone) {
+        copy[1] = defaultTimeZone(copy[1]);
+        report('timezone');
+      }
+      return copy;
+    }
+
+    const callable = new Set(['DateTimeFormat', 'NumberFormat', 'Collator']);
+    for (const name of ['DateTimeFormat', 'NumberFormat', 'Collator', 'PluralRules',
+                        'RelativeTimeFormat', 'ListFormat', 'Segmenter', 'DisplayNames', 'DurationFormat']) {
+      const original = Intl[name];
+      if (typeof original !== 'function') continue;
+      const prepare = name === 'DateTimeFormat' ? dateArguments : localeArguments;
+      patchMethod(Intl, name, (orig) => {
+        const handler = {
+          construct(target, args, newTarget) {
+            return Reflect.construct(target, prepare(args), newTarget);
+          }
+        };
+        // New-only constructors must still reject calls without `new` before
+        // inspecting locale arguments. Legacy callable Intl constructors retain
+        // their native call/chaining semantics and all static methods.
+        if (callable.has(name)) handler.apply = (target, receiver, args) =>
+          Reflect.apply(target, receiver, prepare(args));
+        return new Proxy(orig, handler);
+      });
+      if (Intl[name] === original) continue;
+      const desc = Object.getOwnPropertyDescriptor(original.prototype, 'constructor');
+      if (desc && desc.configurable && desc.value === original) {
+        try {
+          Object.defineProperty(original.prototype, 'constructor', { ...desc, value: Intl[name] });
+          restore.push(() => { try { Object.defineProperty(original.prototype, 'constructor', desc); } catch (_) {} });
+        } catch (_) {}
+      }
+    }
+
+    // Built-in toLocale* methods don't necessarily consult the public Intl
+    // constructor. Patch their locale inputs too; arrays delegate to elements.
+    for (const ctor of [window.Number, window.BigInt]) {
+      if (!ctor) continue;
+      const valueOf = ctor.prototype.valueOf;
+      patchMethod(ctor.prototype, 'toLocaleString', (orig) =>
+        function toLocaleString() {
+          if (!(active && cfg.language)) return orig.apply(this, arguments);
+          valueOf.call(this); // native brand check precedes locale getters
+          return orig.apply(this, localeArguments(arguments));
+        });
+    }
+
+    const rawGetTime = Date.prototype.getTime;
+    for (const name of ['toLocaleString', 'toLocaleDateString', 'toLocaleTimeString']) {
+      patchMethod(Date.prototype, name, (orig) => function () {
+        if (!(active && (cfg.language || cfg.timezone))) return orig.apply(this, arguments);
+        // Invalid dates return "Invalid Date" without touching locales/options.
+        if (!Number.isFinite(rawGetTime.call(this))) return orig.apply(this, arguments);
+        return orig.apply(this, dateArguments(arguments));
+      });
+    }
+
+    for (const name of ['localeCompare', 'toLocaleLowerCase', 'toLocaleUpperCase']) {
+      patchMethod(String.prototype, name, (orig) => function () {
+        if (!(active && cfg.language) || this == null) return orig.apply(this, arguments);
+        // ToString, not String(): Symbols must throw. Coerce each input once,
+        // before locale getters, just as the native string methods do.
+        const text = `${this}`;
+        const args = Array.from(arguments);
+        if (name === 'localeCompare') args[0] = `${args[0]}`;
+        return orig.apply(text, localeArguments(args, name === 'localeCompare' ? 1 : 0));
+      });
+    }
+
     patchMethod(Date.prototype, 'getTimezoneOffset', (orig) =>
       function getTimezoneOffset() {
-        if (active && cfg.timezone) { report('timezone'); return 0; }
-        return orig.call(this);
+        const offset = orig.call(this);
+        if (active && cfg.timezone && Number.isFinite(offset)) { report('timezone'); return 0; }
+        return offset;
       });
   }
-  void realTZ;
 
   if (window.Navigator) {
     const dl = Object.getOwnPropertyDescriptor(Navigator.prototype, 'language');

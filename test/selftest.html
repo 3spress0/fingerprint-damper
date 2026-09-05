@@ -45,6 +45,16 @@
   itself a tracking signal.
 </div>
 
+<div class="note">
+  ClientRects and locale/timezone changes are <strong>opt-in</strong>; enable those
+  switches separately. Compare exact rect hashes, not just rounded dimensions.
+  Local-font probes remain <strong>unprotected</strong>: a missing-font
+  <code>document.fonts.check()</code> result of <code>true</code> is normal, not
+  proof the font exists. A failed <code>FontFace(local(...)).load()</code> can mean
+  absent or blocked by the browser. All probes stay on this page.
+</div>
+
+<script src="font-probes.js"></script>
 <script src="selftest.js"></script>
 </body>
 </html>

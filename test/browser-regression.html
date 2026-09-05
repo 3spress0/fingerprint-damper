@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fingerprint Damper — browser regressions</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { max-width: 850px; margin: 40px auto; padding: 0 20px; font: 14px/1.6 system-ui, sans-serif; }
+  h1 { font-size: 22px; }
+  li { margin: 8px 0; }
+  .pass { color: #288447; }
+  .fail { color: #d04444; }
+  pre { padding: 12px; background: #8881; white-space: pre-wrap; }
+  #fixture { position: absolute; left: -10000px; top: -10000px; width: 150px; visibility: hidden; font: 16px serif; }
+</style>
+</head>
+<body>
+<h1>Browser regression checks</h1>
+<p><strong>Disable the installed extension before opening this page.</strong>
+It captures native methods, loads <code>src/inject.js</code> itself, then checks
+settings and restoration. No server or dependencies are required. Repeat in a
+non-English browser profile to exercise locale changes.</p>
+<p>This tests real API behavior, not extension injection timing or resistance to every fingerprinting technique.</p>
+<p id="summary">Waiting for tests…</p>
+<ol id="results"></ol>
+<h2>Local-font audit (intentionally unprotected)</h2>
+<p>Only the listed candidates are probed. A failed load can mean absent or blocked by browser policy.
+Results stay here; nothing is transmitted.</p>
+<pre id="font-audit">Waiting…</pre>
+<div id="fixture"><span id="text-probe">Wrapped text for client rect measurements. Font differences and 0123456789.</span><div id="empty-probe" style="display:none"></div></div>
+<script src="font-probes.js"></script>
+<script src="browser-regression.js"></script>
+<script src="../src/inject.js"></script>
+</body>
+</html>

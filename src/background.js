@@ -28,6 +28,7 @@ const DEFAULTS = {
   battery: true,
   pushGuard: true,
   netBlock: true,
+  clientRects: false,
   timezone: false,
   language: false,
   webrtc: false,
@@ -42,14 +43,16 @@ const SESSION_SALT = Math.random().toString(36).slice(2) + Date.now().toString(3
 const tabStats = new Map();
 
 const LABELS = {
-  canvas: 'Canvas readback',
+  canvas: 'Canvas / text metrics',
+  clientRects: 'Client rects',
   webgl: 'GPU string',
   audio: 'Audio sampling',
   battery: 'Battery status',
   notify: 'Notification prompt',
   swblock: 'Ad service worker',
   timezone: 'Timezone',
-  language: 'Language'
+  language: 'Language / locale',
+  webrtc: 'WebRTC IP leak'
 };
 
 async function getSettings() {

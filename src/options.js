@@ -14,7 +14,7 @@ const api = typeof browser !== 'undefined' ? browser : chrome;
 
 const SAFE = [
   ['canvas', 'Canvas noise',
-   'Flips the low bit of 32 pixels on readback. Invisible to you, changes the hash.'],
+   'Adds small pixel and measureText() noise to main-thread canvases, including OffscreenCanvas. Changes exact hashes; does not hide installed fonts.'],
   ['webgl', 'Mask GPU string',
    'Reports the renderer as "Mozilla", matching Firefox\u2019s own resistFingerprinting crowd.'],
   ['audio', 'Audio noise',
@@ -34,8 +34,12 @@ const SAFE = [
 ];
 
 const RISKY = [
-  ['timezone', 'Force UTC timezone', 'Breaks calendars, bookings and delivery estimates.'],
-  ['language', 'Force en-US language', 'Sites may stop showing your language.'],
+  ['clientRects', 'Damp client rects',
+   'Adds stable sub-pixel noise to Element/Range bounds. Can affect positioning, text selection and hit-testing. Changes exact hashes, not robust font detection.'],
+  ['timezone', 'Default to UTC timezone',
+   'Uses UTC for default date formatting and timezone offsets. Explicit time zones and other Date methods stay native. Can break calendars and bookings.'],
+  ['language', 'Default to en-US language / locale',
+   'Normalises navigator language, Intl defaults and built-in locale formatting. Supported explicit locale choices stay native. Sites may stop showing your language.'],
   ['webrtc', 'Block WebRTC IP leaks',
    'Strips your public IP from WebRTC ICE candidates. Breaks peer-to-peer calling apps with no TURN server \u2014 most big ones (Meet, Zoom, Discord) have one and are fine.']
 ];

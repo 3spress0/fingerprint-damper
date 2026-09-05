@@ -27,8 +27,9 @@ deobfuscated PropellerAds SDK was found reading GPU model, battery level, screen
 timezone and window position through ordinary DOM calls — none of which an ad blocker can prevent
 once the script has loaded. This extension targets exactly those surfaces.
 
-**Status:** `web-ext lint` → 0 errors, 0 warnings, 0 notices. Packaged at
-`package/fingerprint_damper-1.0.0.zip`.
+**Status:** `web-ext lint` → 0 errors, 0 warnings, 0 notices. Packaged zip lives in `package/`
+(filename tracks `manifest.json`'s version — check there rather than here, this line has gone
+stale before).
 
 ---
 
@@ -79,8 +80,9 @@ untouched. The SDK we analysed used `plugins.length === 0` as a *headless-bot* s
 would flag you as a bot and get you served differently. Screen resolution stays real too, because
 quantising it is a genuine responsive-layout breakage risk. Restraint is a feature.
 
-**4. Anything that breaks sites is opt-in.** Timezone and language spoofing are off by default and
-carry a warning in the settings UI.
+**4. Higher-breakage protections are opt-in.** ClientRects, locale/timezone changes, and WebRTC
+filtering are off by default and carry warnings in the settings UI. Even the default protections
+can affect some sites; the per-site pause is the escape hatch.
 
 ---
 
@@ -90,7 +92,7 @@ carry a warning in the settings UI.
 
 | Protection | Behaviour |
 |---|---|
-| Canvas noise | Flips the low bit of 32 pixels on `toDataURL` / `toBlob` / `getImageData`. Measured impact: **0.17% of subpixels, max delta 1/255** — invisible. O(32) regardless of canvas size, so no game-loop tax. Canvases over 4 MP are skipped. |
+| Canvas / text metric noise | Up to 32 RGB low-bit flips on pixel readback/serialization (max channel delta 1/255), including main-thread `OffscreenCanvas`. The noise step is O(32); serialization needs a copy and skips canvases over 4 MP. `measureText()` fields get stable <0.01px jitter. This changes exact hashes, not reliable font-availability tests. |
 | GPU masking | `UNMASKED_RENDERER_WEBGL` / `UNMASKED_VENDOR_WEBGL` → `Mozilla`. This was the single highest-entropy item the SDK collected. |
 | Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. Inaudible. A `WeakSet` prevents repeated reads from accumulating drift. |
 | Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. |
@@ -108,8 +110,17 @@ feature keeps working. That's the "doesn't hurt UX" line.
 
 ### Opt-in (off by default)
 
-Force UTC timezone, force `en-US` language. Both break real things — calendars, bookings, delivery
-estimates, localisation.
+| Protection | Behaviour and trade-off |
+|---|---|
+| ClientRects damping | Stable sub-pixel changes to `Element` and `Range` `getBoundingClientRect()` / `getClientRects()`. Native `DOMRect`/`DOMRectList` objects, zero dimensions, and bounding/fragment relationships are preserved (within floating-point precision). No DOM layout is changed, but callers using these measurements for positioning, selection or hit-testing may break. |
+| Default to `en-US` language / locale | Sets navigator language and normalises default locale selection in available `Intl` formatters, numeric/date `toLocale*` methods, string collation and locale-sensitive casing. Supported explicit locale choices and Unicode extensions remain native; empty/unsupported requests fall back to `en-US`. Sites may stop showing your language. |
+| Default to UTC timezone | Uses UTC for default `Intl.DateTimeFormat` and date `toLocale*` formatting, plus zero timezone offsets. Output and `resolvedOptions()` agree. Explicit time zones remain native. Can break calendars, bookings and delivery estimates; other local-time `Date` APIs are not masked. |
+| WebRTC IP filtering | Filters host/STUN ICE candidates. May break peer-to-peer applications without a TURN fallback. |
+
+Locale/timezone settings affect **new formatters** and subsequent `toLocale*` calls. Already-created
+formatter objects and already-returned measurement snapshots keep their values; reload after a
+settings change to clear a site's cached objects. These controls reduce particular observations,
+not all ways of inferring a machine's fonts, locale, or time zone.
 
 ---
 
@@ -123,8 +134,8 @@ Not signed, so pick one:
 3. Select `manifest.json` in this folder.
 
 **Permanent:** requires Firefox Developer Edition, Nightly, or ESR. Set
-`xpinstall.signatures.required` to `false` in `about:config`, then install
-`package/fingerprint_damper-1.0.0.zip` from `about:addons` → gear → *Install Add-on From File*.
+`xpinstall.signatures.required` to `false` in `about:config`, then install the zip in `package/`
+matching `manifest.json`'s version, from `about:addons` → gear → *Install Add-on From File*.
 Release Firefox enforces signing with no override; for that you'd need to submit it to AMO
 (self-distribution signing is free and doesn't require public listing).
 
@@ -140,6 +151,14 @@ It reads the same surfaces the ad SDK did and tags each one damped/exposed.
 
 The important check is subtle: **reload twice with it on — the hashes must stay identical.** A hash
 that changes every reload means the noise is per-call, which is worse than no protection.
+
+For dependency-free automated regression tests (Node.js 18+), run
+`node --test test/*.test.cjs`. These use DOM doubles and the real Node Intl implementation.
+`test/browser-regression.html` exercises the patches against real browser APIs with native
+references captured first; open it with the installed extension **disabled**. See
+[test/README.md](test/README.md) for locale-matrix commands, font-probe interpretation and the
+remaining manual checks. The self-test now includes Element/Range hashes, actual locale output,
+and local-font probes explicitly labelled **unprotected**.
 
 ---
 
@@ -168,7 +187,27 @@ If a site misbehaves, pause it there rather than disabling a protection globally
   anonymity set at a far higher usability cost. If you want the strongest available option in
   Firefox itself, `privacy.resistFingerprinting` exists — it will break more, and this extension
   is largely redundant alongside it.
-- **Fonts, `Intl` locale data, and TLS/HTTP-level fingerprinting are untouched.**
+- **Installed-font availability is not hidden.** `FontFace`/CSS `local()` loading and ordinary
+  font selection remain native. `document.fonts` iterates document-managed faces, not the whole
+  installed-font list; `check()` can return `true` for nonexistent families, so it is not itself
+  an installed-font oracle. [1](https://developer.mozilla.org/en-US/docs/Web/API/FontFaceSet/check)
+  Tiny text-metric/ClientRects jitter changes exact hashes, but rounding, tolerance-based probes,
+  and other layout measurements can still identify fonts. The diagnostics do not imply protection.
+- **Intl engine data is not standardised.** The locale option changes default locale selection,
+  not ICU/CLDR versions, `Intl.Locale`, static capability queries or results for supported explicit
+  locales. Native local-time `Date` methods such as `toString()` and `getHours()` can still reveal
+  the time zone even when the UTC option is on.
+- **Worker and worklet globals are unprotected.** Content scripts run in window realms, not
+  dedicated/shared/service workers or worklets. Any relevant API exposed in those globals — for
+  example OffscreenCanvas/WebGL, worker font APIs, Intl or worker navigator fields — bypasses the
+  window patches. Not every window API exists in a worker. No `Worker` constructor shim is used:
+  a partial bootstrap would not close the gap and could break CSP, module loading or worker
+  identity/lifecycle semantics. Broader coverage needs a different architecture or browser-level
+  protections, not another window-prototype patch.
+- **Voice lists, media-device enumeration, permission states, Math and TLS/HTTP-level
+  fingerprinting remain untouched.** The notification guard intercepts the prompt request; it
+  does not mask `Notification.permission` or `navigator.permissions.query()`. These are not
+  claimed as covered by the new high-value controls.
 
 ---
 
@@ -183,6 +222,10 @@ src/background.js             settings, allowlist, session salt, badge
 src/popup.html|js             per-page activity + pause toggle
 src/options.html|js           feature switches
 test/selftest.html|js         before/after verification page
+test/font-probes.js           local-font diagnostics (not a protection)
+test/*.test.cjs               dependency-free regression tests
+test/browser-regression.*     native-browser regression fixture
+test/README.md                verification instructions and coverage limits
 package/                      built .zip
 LICENSE                       GNU GPL v3
 ```
