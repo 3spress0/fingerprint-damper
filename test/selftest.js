@@ -61,6 +61,60 @@ try {
 } catch (e) { pixelHash = 'error'; }
 add('Canvas hash (getImageData)', pixelHash, null);
 
+// --- Font probing (measureText) -----------------------------------------
+let mtHash = 'n/a';
+try {
+  const c = document.createElement('canvas');
+  const x = c.getContext('2d');
+  x.font = '16px Arial';
+  const m = x.measureText('The quick brown fox jumps 0123456789');
+  mtHash = hash(m.width.toFixed(6) + '|' + m.actualBoundingBoxAscent.toFixed(6));
+} catch (e) { mtHash = 'error'; }
+add('measureText hash', mtHash, null);
+
+// --- OffscreenCanvas (main thread) --------------------------------------
+let offHash = 'n/a (unsupported)';
+try {
+  if (window.OffscreenCanvas) {
+    const oc = new OffscreenCanvas(60, 20);
+    const ox = oc.getContext('2d');
+    ox.fillStyle = '#123456'; ox.fillRect(0, 0, 60, 20);
+    offHash = hash(Array.from(ox.getImageData(0, 0, 60, 20).data).join(','));
+  }
+} catch (e) { offHash = 'error'; }
+add('OffscreenCanvas pixel hash', offHash, null);
+
+// --- ClientRects (Element + Range; opt-in) ------------------------------
+let elementRects = 'error', rangeRects = 'error';
+const rectHost = document.createElement('div');
+try {
+  rectHost.style.cssText = 'position:absolute;left:-10000px;top:-10000px;width:180px;visibility:hidden;font:16px serif';
+  const text = document.createElement('span');
+  text.textContent = 'Client rect fingerprint probe — wrapped text 0123456789';
+  rectHost.appendChild(text);
+  document.body.appendChild(rectHost);
+  const rectHash = (node) => {
+    const rects = [node.getBoundingClientRect(), ...node.getClientRects()];
+    return hash(rects.map((r) => [r.x, r.y, r.width, r.height].map((v) => v.toFixed(6)).join(',')).join('|'));
+  };
+  elementRects = rectHash(text);
+  const range = document.createRange();
+  range.selectNodeContents(text);
+  rangeRects = rectHash(range);
+} catch (_) {} finally { rectHost.remove(); }
+add('Element client rect hash (opt-in)', elementRects, null);
+add('Range client rect hash (opt-in)', rangeRects, null);
+
+// --- Local fonts: diagnostics, NOT protected ---------------------------
+add('Local FontFace probes (unprotected)', 'pending…', null);
+
+// --- Passive enumeration, state and experimental Math ------------------
+add('Voice count (opt-in)', 'pending…', null);
+add('Media devices (opt-in)', 'pending…', null);
+add('Permission states (opt-in)', 'pending…', null);
+add('Math hash (experimental)', 'pending…', null);
+if (window.Notification) add('Notification.permission (passive)', Notification.permission, null);
+
 // --- Audio -------------------------------------------------------------
 let audioHash = 'pending…';
 add('AudioContext hash', audioHash, null);
@@ -81,6 +135,16 @@ let tz = 'n/a';
 try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) {}
 add('Timezone', tz + '  (offset ' + new Date().getTimezoneOffset() + ')', tz === 'UTC');
 add('navigator.language', navigator.language, navigator.language === 'en-US');
+try {
+  const locales = ['NumberFormat', 'Collator', 'PluralRules', 'RelativeTimeFormat', 'ListFormat', 'Segmenter']
+    .filter((name) => Intl[name])
+    .map((name) => name + ': ' + new Intl[name]().resolvedOptions().locale);
+  add('Intl default locales (opt-in)', locales.join(', '), null);
+  add('Default number / casing', (1234567.89).toLocaleString() + ' / ' + 'i'.toLocaleUpperCase(), null);
+  const date = new Date('2026-09-05T23:30:00Z');
+  add('Default date formatting (opt-in)', date.toLocaleString(), null);
+  add('Explicit de-DE (stays native)', new Intl.NumberFormat('de-DE').format(1234567.89), null);
+} catch (e) { add('Intl probes', 'error: ' + e.message, null); }
 
 // --- Bot signals the SDK checked (should stay natural) -----------------
 add('navigator.plugins.length', String(navigator.plugins.length),
@@ -110,6 +174,48 @@ function paint() {
   }
 }
 paint();
+
+// --- Local-font audit (async, results never leave the page) ------------
+probeLocalFonts().then((result) => {
+  const row = rows.find((r) => r[0] === 'Local FontFace probes (unprotected)');
+  if (!result.supported) {
+    row[1] = 'unsupported';
+  } else {
+    row[1] = result.availableCandidates.join(', ') || 'none of the tested candidates loaded';
+    rows.push(['Missing font: check / local load', String(result.missingCheck) + ' / ' + String(result.missingLoaded), null]);
+    rows.push(['Document-managed font faces', result.documentFamilies.join(', ') || '(none; not an installed-font list)', null]);
+  }
+  paint();
+}).catch((e) => {
+  rows.find((r) => r[0] === 'Local FontFace probes (unprotected)')[1] = 'error: ' + e.message;
+  paint();
+});
+
+// --- Compare window / worker observations without patching workers ----
+Promise.all([globalThis.__fpdProbeValues(), probeWorkers()]).then(([page, workers]) => {
+  for (const [key, value] of [
+    ['Voice count (opt-in)', String(page.voices)],
+    ['Media devices (opt-in)', JSON.stringify(page.devices)],
+    ['Permission states (opt-in)', JSON.stringify(page.permissions)],
+    ['Math hash (experimental)', page.math]
+  ]) rows.find(row => row[0] === key)[1] = value;
+  for (const result of workers) {
+    const v = result.values;
+    const value = result.status === 'ok'
+      ? `locale ${v.locale}; zone ${v.timezone}; cores ${v.cores}; canvas ${v.canvas}; math ${v.math}`
+      : result.status + ': ' + (result.message || 'API not exposed');
+    rows.push(['Worker ' + result.kind + ' (not API-patched)', value, null]);
+  }
+  document.getElementById('scope-probes').textContent = JSON.stringify({ page, workers }, null, 2);
+  paint();
+}).catch(error => {
+  const message = 'error: ' + error.message;
+  for (const key of ['Voice count (opt-in)', 'Media devices (opt-in)', 'Permission states (opt-in)', 'Math hash (experimental)']) {
+    rows.find(row => row[0] === key)[1] = message;
+  }
+  document.getElementById('scope-probes').textContent = message;
+  paint();
+});
 
 // --- Battery (async) ---------------------------------------------------
 if (navigator.getBattery) {
@@ -150,16 +256,15 @@ try {
   paint();
 }
 
-// --- Notification prompt (must not show a dialog) ----------------------
-setTimeout(() => {
-  if (!window.Notification) return;
-  if (Notification.permission !== 'default') {
-    rows.push(['Notification.permission', Notification.permission, null]);
-    paint();
-    return;
-  }
-  Notification.requestPermission().then((r) => {
-    rows.push(['requestPermission() returned', r + (r === 'default' ? '  (no dialog = damped)' : ''), r === 'default']);
-    paint();
-  });
-}, 900);
+// --- Notification request: explicit user action, never on page load ----
+document.getElementById('test-notification').addEventListener('click', async () => {
+  let value = 'unavailable';
+  try {
+    if (window.Notification) value = await Notification.requestPermission();
+  } catch (e) { value = 'rejected: ' + e.name; }
+  const row = rows.find(row => row[0] === 'Notification request result');
+  if (row) row[1] = value; else rows.push(['Notification request result', value, null]);
+  const passive = rows.find(row => row[0] === 'Notification.permission (passive)');
+  if (passive) passive[1] = Notification.permission;
+  paint();
+});

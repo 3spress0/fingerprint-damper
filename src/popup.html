@@ -35,6 +35,8 @@
   button.on { border-color: #d98b2b; background: color-mix(in srgb, #d98b2b 18%, transparent); }
   .foot { padding: 0 14px 12px; }
   a { color: inherit; font-size: 11px; opacity: .7; }
+  #policy-status, #action-error, .note { font-size: 11px; overflow-wrap: anywhere; }
+  #action-error { color: #d34242; }
   h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
        opacity: .55; margin: 0 0 6px; font-weight: 600; }
 </style>
@@ -46,7 +48,7 @@
   </header>
 
   <section>
-    <h2>Intercepted on this page</h2>
+    <h2>Page API activity (not network blocks)</h2>
     <div id="counts"></div>
   </section>
 
@@ -54,8 +56,17 @@
     <button id="allow">Loading…</button>
   </section>
 
+  <section class="sep">
+    <h2>Global lockdown</h2>
+    <p id="policy-status" role="status" aria-live="polite">Checking browser rules…</p>
+    <button id="lock-off" type="button">Turn off all lockdown</button>
+    <p class="note">API pause does not disable global rules. Reload affected pages to apply/release CSP.
+    If removal fails, disable the extension in about:addons.</p>
+    <p id="action-error" role="alert"></p>
+  </section>
   <div class="foot"><a href="#" id="opts">Settings…</a></div>
 
+  <script src="lockdown.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

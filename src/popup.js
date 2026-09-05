@@ -26,7 +26,7 @@ function render(data) {
   if (!keys.length) {
     const d = document.createElement('div');
     d.className = 'empty';
-    d.textContent = data.allowlisted ? 'Paused on this site.' : 'Nothing yet.';
+    d.textContent = data.allowlisted ? 'API patches paused on this site.' : 'No API counts yet.';
     box.appendChild(d);
   } else {
     for (const k of keys) {
@@ -44,26 +44,59 @@ function render(data) {
 
   const btn = document.getElementById('allow');
   btn.disabled = !data.origin;
-  btn.textContent = data.allowlisted ? 'Resume on this site' : 'Pause on this site';
+  btn.textContent = data.allowlisted ? 'Resume API patches on this site' : 'Pause API patches on this site';
   btn.classList.toggle('on', !!data.allowlisted);
+  const count = FPDLockdown.keys.filter(key => data.settings && data.settings[key]).length;
+  const status = data.policyStatus || {};
+  document.getElementById('policy-status').textContent = status.state === 'error'
+    ? 'Policy error: ' + status.error
+    : status.state === 'synced'
+      ? count ? `${count} controls selected globally; ${status.ruleCount} rules configured. Not an enforcement test.`
+        : 'Global lockdown off.'
+      : 'Browser rules are not confirmed yet.';
 }
 
 async function load() {
   const data = await api.runtime.sendMessage({ type: 'popupData' });
-  if (data) render(data);
+  if (!data || !data.settings) throw new Error('Unable to read settings.');
+  render(data);
 }
 
-document.getElementById('allow').addEventListener('click', async () => {
+let busy = false;
+async function action(run) {
+  if (busy) return;
+  busy = true;
+  for (const id of ['allow', 'lock-off']) document.getElementById(id).disabled = true;
+  document.getElementById('action-error').textContent = '';
+  try { await run(); }
+  catch (error) { document.getElementById('action-error').textContent = error.message; }
+  finally {
+    busy = false;
+    document.getElementById('lock-off').disabled = false;
+    document.getElementById('allow').disabled = !current || !current.origin;
+  }
+}
+document.getElementById('allow').addEventListener('click', () => action(async () => {
   if (!current || !current.origin) return;
-  await api.runtime.sendMessage({ type: 'toggleAllowlist', origin: current.origin });
+  const result = await api.runtime.sendMessage({ type: 'toggleAllowlist', origin: current.origin });
+  if (!result || !result.ok) throw new Error(result && result.error || 'Pause failed.');
   const tabs = await api.tabs.query({ active: true, currentWindow: true });
-  if (tabs[0]) api.tabs.reload(tabs[0].id);
+  if (tabs[0]) await api.tabs.reload(tabs[0].id);
   window.close();
-});
+}));
+document.getElementById('lock-off').addEventListener('click', () => action(async () => {
+  const result = await api.runtime.sendMessage({ type: 'disableLockdown' });
+  if (!result || !result.ok) throw new Error(result && result.error || 'Lockdown removal failed.');
+  await load();
+  if (current.policyStatus?.state === 'synced' && !FPDLockdown.keys.some(key => current.settings[key])) {
+    document.getElementById('policy-status').textContent = 'Global lockdown off for future loads. Reload affected tabs (bypass cache).';
+  }
+  if (result.warning) document.getElementById('action-error').textContent = result.warning;
+}));
 
 document.getElementById('opts').addEventListener('click', (e) => {
   e.preventDefault();
   api.runtime.openOptionsPage();
 });
 
-load();
+load().catch(error => { document.getElementById('action-error').textContent = error.message; });
