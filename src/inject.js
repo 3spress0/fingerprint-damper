@@ -50,6 +50,7 @@
     pushGuard: true,
     timezone: false,   // opt-in: breaks calendars/booking flows
     language: false,   // opt-in: breaks localisation
+    webrtc: false,      // opt-in: breaks P2P calls with no TURN fallback
     stats: true
   };
 
@@ -435,6 +436,64 @@
       if (active && cfg.language) { report('language'); return Object.freeze(['en-US', 'en']); }
       return dls && dls.get ? dls.get.call(this) : ['en-US', 'en'];
     });
+  }
+
+  // ============================================================== 8. WEBRTC
+  // Off by default: strips "host" (LAN, already mDNS-obfuscated by Firefox)
+  // and "srflx" (public IP via STUN — the actual VPN-bypass leak) candidates,
+  // leaving only "relay" (TURN) candidates. Handles both trickle-ICE events
+  // and non-trickle SDP blobs. Opt-in because P2P apps with no TURN fallback
+  // will simply fail to connect.
+  const ICE_LEAK = /\b(typ (srflx|host))\b/;
+
+  function stripSdp(sdp) {
+    if (typeof sdp !== 'string') return sdp;
+    return sdp.split('\r\n').filter((l) => !(l.startsWith('a=candidate:') && ICE_LEAK.test(l))).join('\r\n');
+  }
+
+  if (window.RTCPeerConnection) {
+    patchMethod(RTCPeerConnection.prototype, 'setLocalDescription', (orig) =>
+      function setLocalDescription(desc, ...rest) {
+        if (active && cfg.webrtc && desc && desc.sdp) {
+          report('webrtc');
+          const clean = stripSdp(desc.sdp);
+          desc = window.RTCSessionDescription
+            ? new RTCSessionDescription({ type: desc.type, sdp: clean })
+            : { type: desc.type, sdp: clean };
+        }
+        return orig.call(this, desc, ...rest);
+      });
+
+    const filterCandidate = (ev) =>
+      active && cfg.webrtc && ev && ev.candidate && ICE_LEAK.test(ev.candidate.candidate || '');
+
+    const onIceDesc = Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate');
+    if (onIceDesc && onIceDesc.configurable) {
+      Object.defineProperty(RTCPeerConnection.prototype, 'onicecandidate', {
+        configurable: true,
+        get() { return this.__fpdOnIce; },
+        set(h) {
+          this.__fpdOnIce = h;
+          onIceDesc.set.call(this, typeof h !== 'function' ? h : function (ev) {
+            if (filterCandidate(ev)) { report('webrtc'); return; }
+            return h.call(this, ev);
+          });
+        }
+      });
+      restore.push(() => { try { Object.defineProperty(RTCPeerConnection.prototype, 'onicecandidate', onIceDesc); } catch (_) {} });
+    }
+
+    // addEventListener lives on EventTarget.prototype, not RTCPeerConnection's.
+    patchMethod(EventTarget.prototype, 'addEventListener', (orig) =>
+      function addEventListener(type, listener, opts) {
+        if (type === 'icecandidate' && typeof listener === 'function') {
+          return orig.call(this, type, function (ev) {
+            if (filterCandidate(ev)) { report('webrtc'); return; }
+            return listener.call(this, ev);
+          }, opts);
+        }
+        return orig.call(this, type, listener, opts);
+      });
   }
 
   // ==================================================== control channel

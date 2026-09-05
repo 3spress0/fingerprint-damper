@@ -30,6 +30,7 @@ const DEFAULTS = {
   netBlock: true,
   timezone: false,
   language: false,
+  webrtc: false,
   stats: true
 };
 

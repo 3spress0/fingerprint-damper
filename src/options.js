@@ -35,7 +35,9 @@ const SAFE = [
 
 const RISKY = [
   ['timezone', 'Force UTC timezone', 'Breaks calendars, bookings and delivery estimates.'],
-  ['language', 'Force en-US language', 'Sites may stop showing your language.']
+  ['language', 'Force en-US language', 'Sites may stop showing your language.'],
+  ['webrtc', 'Block WebRTC IP leaks',
+   'Strips your public IP from WebRTC ICE candidates. Breaks peer-to-peer calling apps with no TURN server \u2014 most big ones (Meet, Zoom, Discord) have one and are fine.']
 ];
 
 let settings = {};

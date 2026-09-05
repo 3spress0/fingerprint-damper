@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icons/icon.svg" alt="Fingerprint Damper logo" width="80" height="80">
+</p>
+
 <h1 align="center">Fingerprint Damper</h1>
 
 <p align="center">
