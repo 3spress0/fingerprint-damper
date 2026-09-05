@@ -108,6 +108,13 @@ add('Range client rect hash (opt-in)', rangeRects, null);
 // --- Local fonts: diagnostics, NOT protected ---------------------------
 add('Local FontFace probes (unprotected)', 'pending…', null);
 
+// --- Passive enumeration, state and experimental Math ------------------
+add('Voice count (opt-in)', 'pending…', null);
+add('Media devices (opt-in)', 'pending…', null);
+add('Permission states (opt-in)', 'pending…', null);
+add('Math hash (experimental)', 'pending…', null);
+if (window.Notification) add('Notification.permission (passive)', Notification.permission, null);
+
 // --- Audio -------------------------------------------------------------
 let audioHash = 'pending…';
 add('AudioContext hash', audioHash, null);
@@ -184,6 +191,32 @@ probeLocalFonts().then((result) => {
   paint();
 });
 
+// --- Compare window / worker observations without patching workers ----
+Promise.all([globalThis.__fpdProbeValues(), probeWorkers()]).then(([page, workers]) => {
+  for (const [key, value] of [
+    ['Voice count (opt-in)', String(page.voices)],
+    ['Media devices (opt-in)', JSON.stringify(page.devices)],
+    ['Permission states (opt-in)', JSON.stringify(page.permissions)],
+    ['Math hash (experimental)', page.math]
+  ]) rows.find(row => row[0] === key)[1] = value;
+  for (const result of workers) {
+    const v = result.values;
+    const value = result.status === 'ok'
+      ? `locale ${v.locale}; zone ${v.timezone}; cores ${v.cores}; canvas ${v.canvas}; math ${v.math}`
+      : result.status + ': ' + (result.message || 'API not exposed');
+    rows.push(['Worker ' + result.kind + ' (unprotected)', value, null]);
+  }
+  document.getElementById('scope-probes').textContent = JSON.stringify({ page, workers }, null, 2);
+  paint();
+}).catch(error => {
+  const message = 'error: ' + error.message;
+  for (const key of ['Voice count (opt-in)', 'Media devices (opt-in)', 'Permission states (opt-in)', 'Math hash (experimental)']) {
+    rows.find(row => row[0] === key)[1] = message;
+  }
+  document.getElementById('scope-probes').textContent = message;
+  paint();
+});
+
 // --- Battery (async) ---------------------------------------------------
 if (navigator.getBattery) {
   navigator.getBattery().then((b) => {
@@ -223,16 +256,15 @@ try {
   paint();
 }
 
-// --- Notification prompt (must not show a dialog) ----------------------
-setTimeout(() => {
-  if (!window.Notification) return;
-  if (Notification.permission !== 'default') {
-    rows.push(['Notification.permission', Notification.permission, null]);
-    paint();
-    return;
-  }
-  Notification.requestPermission().then((r) => {
-    rows.push(['requestPermission() returned', r + (r === 'default' ? '  (no dialog = damped)' : ''), r === 'default']);
-    paint();
-  });
-}, 900);
+// --- Notification request: explicit user action, never on page load ----
+document.getElementById('test-notification').addEventListener('click', async () => {
+  let value = 'unavailable';
+  try {
+    if (window.Notification) value = await Notification.requestPermission();
+  } catch (e) { value = 'rejected: ' + e.name; }
+  const row = rows.find(row => row[0] === 'Notification request result');
+  if (row) row[1] = value; else rows.push(['Notification request result', value, null]);
+  const passive = rows.find(row => row[0] === 'Notification.permission (passive)');
+  if (passive) passive[1] = Notification.permission;
+  paint();
+});

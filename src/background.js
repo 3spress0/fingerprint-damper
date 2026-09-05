@@ -32,6 +32,10 @@ const DEFAULTS = {
   timezone: false,
   language: false,
   webrtc: false,
+  speechVoices: false,
+  mediaDevices: false,
+  permissionStates: false,
+  mathRounding: false,
   stats: true
 };
 
@@ -52,7 +56,11 @@ const LABELS = {
   swblock: 'Ad service worker',
   timezone: 'Timezone',
   language: 'Language / locale',
-  webrtc: 'WebRTC IP leak'
+  webrtc: 'WebRTC IP leak',
+  speechVoices: 'Speech voice list',
+  mediaDevices: 'Media device list',
+  permissionStates: 'Permission state',
+  mathRounding: 'Math rounding'
 };
 
 async function getSettings() {

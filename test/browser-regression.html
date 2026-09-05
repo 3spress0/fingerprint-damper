@@ -27,8 +27,15 @@ non-English browser profile to exercise locale changes.</p>
 <p>Only the listed candidates are probed. A failed load can mean absent or blocked by browser policy.
 Results stay here; nothing is transmitted.</p>
 <pre id="font-audit">Waiting…</pre>
+<h2>Window / worker audit (workers unprotected)</h2>
+<p>Dedicated classic/module and shared-worker diagnostics run without installing worker patches.
+Use a local HTTP server if file-origin workers are rejected. A matching value, missing API,
+error or timeout is not evidence of protection. No service workers are registered.</p>
+<pre id="worker-audit">Waiting…</pre>
 <div id="fixture"><span id="text-probe">Wrapped text for client rect measurements. Font differences and 0123456789.</span><div id="empty-probe" style="display:none"></div></div>
 <script src="font-probes.js"></script>
+<script src="probe-values.js"></script>
+<script src="worker-probes.js"></script>
 <script src="browser-regression.js"></script>
 <script src="../src/inject.js"></script>
 </body>

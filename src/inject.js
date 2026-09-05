@@ -52,6 +52,10 @@
     timezone: false,   // opt-in: breaks calendars/booking flows
     language: false,   // opt-in: breaks localisation
     webrtc: false,      // opt-in: breaks P2P calls with no TURN fallback
+    speechVoices: false, // opt-in: voice pickers may stop working
+    mediaDevices: false, // opt-in: camera/microphone/speaker pickers may break
+    permissionStates: false, // opt-in: sites may show redundant permission UI
+    mathRounding: false, // experimental: reduces numerical precision
     stats: true
   };
 
@@ -105,7 +109,7 @@
   }
 
   // ------------------------------------------------------------- patch utils
-  function patchMethod(obj, name, factory) {
+  function patchMethod(obj, name, factory, restorers = restore) {
     if (!obj) return;
     let desc;
     try { desc = Object.getOwnPropertyDescriptor(obj, name); } catch (_) { return; }
@@ -113,15 +117,19 @@
     const original = desc.value;
     const replacement = factory(original);
 
-    // Keep toString() honest-looking so naive tamper checks don't trip.
+    // Preserve call metadata without redefining matching Proxy-target properties.
     try {
-      Object.defineProperty(replacement, 'name', { value: name, configurable: true });
-      Object.defineProperty(replacement, 'length', { value: original.length, configurable: true });
+      if (replacement.name !== original.name) {
+        Object.defineProperty(replacement, 'name', { value: original.name, configurable: true });
+      }
+      if (replacement.length !== original.length) {
+        Object.defineProperty(replacement, 'length', { value: original.length, configurable: true });
+      }
     } catch (_) {}
 
     try {
       Object.defineProperty(obj, name, { ...desc, value: replacement });
-      restore.push(() => { try { Object.defineProperty(obj, name, desc); } catch (_) {} });
+      restorers.push(() => { try { Object.defineProperty(obj, name, desc); } catch (_) {} });
     } catch (_) {}
   }
 
@@ -542,8 +550,9 @@
   const AD_SW = /(sw-check-permissions|sw\.hid\.js|pushsdk|9hito|rtmark|zdzhk|kbvcd|dulotadtor|abunownon|dawac|\bzoneid=)/i;
 
   if (window.Notification) {
-    patchMethod(Notification, 'requestPermission', () =>
+    patchMethod(Notification, 'requestPermission', (orig) =>
       function requestPermission(cb) {
+        if (!(active && cfg.pushGuard)) return orig.apply(this, arguments);
         report('notify');
         // "default" (not "denied") - the site is told the user dismissed it,
         // which is the least distinguishable, least sticky answer.
@@ -757,6 +766,102 @@
       });
   }
 
+  // ========================================= 9. PASSIVE ENUMERATION / STATE
+  // Strict, explicit opt-ins. Do not invent voice/device objects or IDs: native
+  // speak()/getUserMedia() remain available, but list-driven UIs may break.
+  if (window.SpeechSynthesis) {
+    patchMethod(SpeechSynthesis.prototype, 'getVoices', (orig) =>
+      function getVoices() {
+        const voices = orig.apply(this, arguments); // preserve native brand checks
+        if (active && cfg.speechVoices) { report('speechVoices'); return []; }
+        return voices;
+      });
+  }
+
+  if (window.MediaDevices) {
+    patchMethod(MediaDevices.prototype, 'enumerateDevices', (orig) =>
+      function enumerateDevices() {
+        // Never turn a native security/policy rejection into a successful list.
+        // Check settings at fulfillment so an in-flight read respects live changes.
+        return orig.apply(this, arguments).then((devices) => {
+          if (active && cfg.mediaDevices) { report('mediaDevices'); return []; }
+          return devices;
+        });
+      });
+  }
+
+  // Keep query() and its actual PermissionStatus objects/events native. Mask
+  // passive state reads, not browser grants, request outcomes or support/errors.
+  if (window.PermissionStatus) {
+    const desc = Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state');
+    if (desc && desc.get) patchGetter(PermissionStatus.prototype, 'state', function () {
+      const state = desc.get.call(this);
+      if (active && cfg.permissionStates) { report('permissionStates'); return 'prompt'; }
+      return state;
+    });
+  }
+  if (window.Notification) {
+    const desc = Object.getOwnPropertyDescriptor(Notification, 'permission');
+    if (desc && desc.get) patchGetter(Notification, 'permission', function () {
+      const state = desc.get.call(this);
+      if (active && cfg.permissionStates) { report('permissionStates'); return 'default'; }
+      return state;
+    });
+  }
+
+  // ============================================== 10. EXPERIMENTAL MATH
+  // Coarsen the result, not the inputs or implementation. This is NOT a faithful
+  // cross-engine Math replacement: exact identities can change, and arithmetic,
+  // WebAssembly and other globals remain native. Off by default for that reason.
+  let updateMathRounding = () => {};
+  if (window.Math && window.DataView && window.ArrayBuffer) {
+    const bits = new DataView(new ArrayBuffer(8));
+    const mathRestorers = [];
+    let retired = false;
+    const removeMath = () => { while (mathRestorers.length) mathRestorers.pop()(); };
+    restore.push(() => { retired = true; removeMath(); });
+    function roundedMathResult(value) {
+      // Preserve native special values, signed zero and integer results.
+      if (!Number.isFinite(value) || value === 0 || Number.isInteger(value)) return value;
+      bits.setFloat64(0, value, false);
+      let high = bits.getUint32(0, false);
+      if (((high >>> 20) & 0x7ff) === 0) return value; // preserve subnormals too
+      const low = bits.getUint32(4, false);
+      const discarded = low & 0xfff;
+      let rounded = (low & 0xfffff000) >>> 0;
+      // Keep 40 fraction bits (41 significant bits for normal doubles), rounding
+      // to nearest, ties to even. Relative error is at most roughly 2^-41.
+      if (discarded > 0x800 || (discarded === 0x800 && (rounded & 0x1000))) {
+        rounded += 0x1000;
+        if (rounded > 0xffffffff) { rounded = 0; high++; }
+      }
+      bits.setUint32(0, high, false);
+      bits.setUint32(4, rounded, false);
+      return bits.getFloat64(0, false);
+    }
+
+    // Leave native Math identities/JIT intrinsics alone while the option is off.
+    // Once allowlisting restores the whole page, wait for reload like other hooks.
+    updateMathRounding = () => {
+      if (retired || !(active && cfg.mathRounding)) { removeMath(); return; }
+      if (mathRestorers.length) return;
+      for (const name of ['acos', 'acosh', 'asin', 'asinh', 'atan', 'atanh', 'atan2',
+                          'cos', 'cosh', 'exp', 'expm1', 'log', 'log1p', 'log2', 'log10',
+                          'sin', 'sinh', 'tan', 'tanh', 'pow', 'sqrt', 'cbrt', 'hypot']) {
+        // A Proxy keeps native non-constructibility, name/length and call behavior.
+        patchMethod(Math, name, (orig) => new Proxy(orig, {
+          apply(target, receiver, args) {
+            const value = Reflect.apply(target, receiver, args); // coerce inputs once
+            if (retired || !(active && cfg.mathRounding)) return value;
+            const rounded = roundedMathResult(value);
+            if (!Object.is(rounded, value)) report('mathRounding');
+            return rounded;
+          }
+        }), mathRestorers);
+      }
+    };
+  }
+
   // ==================================================== control channel
   document.addEventListener('__fpd_config', (ev) => {
     let msg;
@@ -769,6 +874,7 @@
     } else if (msg.allowlisted === false) {
       active = true;
     }
+    updateMathRounding();
   });
 
   try {

@@ -34,6 +34,14 @@ const SAFE = [
 ];
 
 const RISKY = [
+  ['speechVoices', 'Hide speech voice list',
+   'getVoices() returns an empty list. Default speech remains native, but voice pickers and some accessibility features may stop working.'],
+  ['mediaDevices', 'Hide media device list',
+   'enumerateDevices() returns an empty list, hiding labels, counts and IDs. Does not block capture or change grants. Camera, microphone and speaker pickers may break.'],
+  ['permissionStates', 'Mask passive permission states',
+   'Supported PermissionStatus.state reads report prompt; Notification.permission reports default. Real grants, request outcomes and events remain native. Sites may show redundant permission UI or disable features.'],
+  ['mathRounding', 'Reduce Math precision (experimental)',
+   'Rounds low-order bits of transcendental, root and power results. Can change exact identities and break numerical code. Arithmetic, WebAssembly and workers remain native; not a complete math fingerprint defence.'],
   ['clientRects', 'Damp client rects',
    'Adds stable sub-pixel noise to Element/Range bounds. Can affect positioning, text selection and hit-testing. Changes exact hashes, not robust font detection.'],
   ['timezone', 'Default to UTC timezone',

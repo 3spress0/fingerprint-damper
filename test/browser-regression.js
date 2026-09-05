@@ -22,13 +22,24 @@
     date: Date.prototype.toLocaleString,
     intl: Object.fromEntries(Object.getOwnPropertyNames(Intl).map((name) => [name, Intl[name]])),
     fontFace: window.FontFace,
-    fontCheck: document.fonts && document.fonts.check
+    fontCheck: document.fonts && document.fonts.check,
+    voices: window.SpeechSynthesis && SpeechSynthesis.prototype.getVoices,
+    speak: window.SpeechSynthesis && SpeechSynthesis.prototype.speak,
+    devices: window.MediaDevices && MediaDevices.prototype.enumerateDevices,
+    capture: navigator.mediaDevices && navigator.mediaDevices.getUserMedia,
+    query: navigator.permissions && navigator.permissions.query,
+    state: window.PermissionStatus && Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state'),
+    notification: window.Notification && Object.getOwnPropertyDescriptor(Notification, 'permission'),
+    request: window.Notification && Notification.requestPermission,
+    math: Object.fromEntries(Object.getOwnPropertyNames(Math).map(name => [name, Math[name]])),
+    worker: window.Worker, sharedWorker: window.SharedWorker
   };
   const fields = ['x', 'y', 'width', 'height', 'left', 'right', 'top', 'bottom'];
   const snapshot = (rect) => fields.map((key) => rect[key]);
   const assert = (value, message) => { if (!value) throw new Error(message); };
   const equal = (a, b, message) => assert(JSON.stringify(a) === JSON.stringify(b), message);
   const close = (a, b) => assert(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
+  const skip = message => { const error = new Error(message); error.skipped = true; throw error; };
   const settings = (value) => document.dispatchEvent(new CustomEvent('__fpd_config', {
     detail: JSON.stringify({ settings: value, salt: 'browser-regression-session' })
   }));
@@ -43,9 +54,9 @@
         li.className = 'pass';
         results.push({ name, passed: true });
       } catch (error) {
-        li.textContent = 'FAIL — ' + name + ': ' + error.message;
-        li.className = 'fail';
-        results.push({ name, passed: false, error: error.message });
+        li.textContent = (error.skipped ? 'SKIP — ' : 'FAIL — ') + name + ': ' + error.message;
+        li.className = error.skipped ? 'skip' : 'fail';
+        results.push({ name, passed: error.skipped ? null : false, skipped: !!error.skipped, error: error.message });
       }
       document.getElementById('results').appendChild(li);
     }
@@ -58,6 +69,8 @@
       equal(snapshot(node.getBoundingClientRect()), snapshot(native.elementBounds.call(node)), 'element bounds changed');
       equal(snapshot(range.getBoundingClientRect()), snapshot(native.rangeBounds.call(range)), 'range bounds changed');
       equal((12345.6).toLocaleString(), native.number.call(12345.6), 'default number formatting changed');
+      assert(Math.sin === native.math.sin, 'disabled Math control replaced a native function');
+      if (native.notification) equal(Notification.permission, native.notification.get.call(Notification), 'default permission state changed');
     });
 
     settings({ clientRects: true });
@@ -138,11 +151,64 @@
       assert(audit.missingCheck === true && audit.missingLoaded === false, 'missing-font controls did not match expected semantics');
     });
 
-    settings({ clientRects: false, language: false, timezone: false });
+    settings({ speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true });
+    await check('Voice enumeration is hidden without replacing speech playback', () => {
+      if (!native.voices || !window.speechSynthesis) skip('Speech synthesis is unavailable.');
+      const voices = speechSynthesis.getVoices();
+      assert(Array.isArray(voices) && voices.length === 0, 'voice list still visible');
+      assert(speechSynthesis.speak === native.speak, 'speak() was changed');
+    });
+    await check('Device enumeration is hidden without invoking or replacing capture', async () => {
+      if (!native.devices || !navigator.mediaDevices) skip('Media device API is unavailable.');
+      try { await native.devices.call(navigator.mediaDevices); }
+      catch (e) { skip('Native enumeration is rejected: ' + e.name); }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      assert(Array.isArray(devices) && devices.length === 0, 'device list still visible');
+      assert(navigator.mediaDevices.getUserMedia === native.capture, 'capture API was changed');
+    });
+    await check('Passive permission masking preserves query and native status objects', async () => {
+      if (!native.query || !native.state) skip('PermissionStatus API is unavailable.');
+      let status;
+      try { status = await navigator.permissions.query({ name: 'geolocation' }); }
+      catch (e) { skip('Native query is rejected: ' + e.name); }
+      assert(status instanceof PermissionStatus, 'status lost its native type');
+      equal(status.state, 'prompt', 'permission state was not masked');
+      assert(['prompt', 'granted', 'denied'].includes(native.state.get.call(status)), 'native state getter failed');
+      assert(navigator.permissions.query === native.query, 'query validation/support behavior was replaced');
+      if (native.notification) equal(Notification.permission, 'default', 'notification state was not masked');
+      // Do not request any real permissions as part of automatic browser checks.
+    });
+    await check('Experimental Math rounding is stable, bounded and preserves special values', () => {
+      for (const [name, args] of [['sin', [1]], ['exp', [.123]], ['log1p', [.123]], ['sqrt', [2]], ['hypot', [.123, .456]]]) {
+        const raw = native.math[name](...args), value = Math[name](...args);
+        assert(Math.abs(value - raw) / Math.abs(raw) <= 2 ** -41, 'Math error exceeds budget: ' + name);
+        equal(value, Math[name](...args), 'Math result drifted');
+      }
+      assert(Math.sin(1) !== native.math.sin(1), 'Math sample was not rounded');
+      assert(Object.is(Math.sin(-0), -0) && Math.exp(Infinity) === Infinity && Number.isNaN(Math.sqrt(-1)), 'special value changed');
+      assert(Math.pow(2, 40) === native.math.pow(2, 40), 'integer result changed');
+      assert(Math.random === native.math.random && Math.imul === native.math.imul, 'unrelated Math operation changed');
+      let threw = false;
+      try { new Math.sin(1); } catch (e) { threw = e instanceof TypeError; }
+      assert(threw, 'Math function became constructible');
+    });
+    await check('Worker constructors remain deliberately unmodified', () => {
+      assert(window.Worker === native.worker && window.SharedWorker === native.sharedWorker, 'worker execution was changed');
+    });
+    settings({ canvas: true });
+    try {
+      const [page, workers] = await Promise.all([globalThis.__fpdProbeValues(), probeWorkers()]);
+      document.getElementById('worker-audit').textContent = JSON.stringify({ page, workers }, null, 2);
+    } catch (e) { document.getElementById('worker-audit').textContent = 'Diagnostic error: ' + e.message; }
+
+    settings({ clientRects: false, language: false, timezone: false, speechVoices: false,
+      mediaDevices: false, permissionStates: false, mathRounding: false });
     await check('Turning settings off returns native results', () => {
       equal(snapshot(node.getBoundingClientRect()), snapshot(native.elementBounds.call(node)), 'rect setting did not turn off');
       equal((12345.6).toLocaleString(), native.number.call(12345.6), 'locale setting did not turn off');
       equal(new Intl.DateTimeFormat().resolvedOptions().timeZone, new native.intl.DateTimeFormat().resolvedOptions().timeZone, 'timezone setting did not turn off');
+      equal(Math.sin(1), native.math.sin(1), 'Math setting did not turn off');
+      if (native.notification) equal(Notification.permission, native.notification.get.call(Notification), 'permission state did not turn off');
     });
 
     await check('Allowlisting restores original methods and constructor descriptors', () => {
@@ -152,9 +218,16 @@
       assert(Intl.NumberFormat === native.intl.NumberFormat, 'Intl constructor not restored');
       assert(Intl.NumberFormat.prototype.constructor === native.intl.NumberFormat, 'prototype constructor not restored');
       assert(Number.prototype.toLocaleString === native.number && Date.prototype.toLocaleString === native.date, 'built-in formatting methods not restored');
+      if (native.voices) assert(SpeechSynthesis.prototype.getVoices === native.voices, 'voice method not restored');
+      if (native.devices) assert(MediaDevices.prototype.enumerateDevices === native.devices, 'device method not restored');
+      if (native.state) assert(Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get === native.state.get, 'permission getter not restored');
+      if (native.notification) assert(Object.getOwnPropertyDescriptor(Notification, 'permission').get === native.notification.get, 'notification getter not restored');
+      if (native.request) assert(Notification.requestPermission === native.request, 'request method not restored');
+      assert(Math.sin === native.math.sin && Math.pow === native.math.pow, 'Math methods not restored');
     });
-    const failed = results.filter((r) => !r.passed).length;
-    summary.textContent = `${results.length - failed} passed; ${failed} failed.`;
+    const failed = results.filter(r => r.passed === false).length;
+    const skipped = results.filter(r => r.skipped).length;
+    summary.textContent = `${results.length - failed - skipped} passed; ${failed} failed; ${skipped} skipped.`;
     summary.className = failed ? 'fail' : 'pass';
     summary.dataset.failed = String(failed);
     window.__fpdBrowserResults = results;

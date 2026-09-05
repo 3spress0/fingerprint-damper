@@ -182,7 +182,7 @@ function setup({ origin = 'https://one.example', day = '2026-09-05', offscreen =
       return Reflect.construct(target, args.length ? args : ['${day}T12:00:00Z'], newTarget);
     }
   });
-  Object.assign(window, { Intl, Date, Number, BigInt, String });
+  Object.assign(window, { Intl, Date, Number, BigInt, String, Math, DataView, ArrayBuffer });
   globalThis.nativeIntl = Object.fromEntries(Object.getOwnPropertyNames(Intl).map(k => [k, Intl[k]]));
   globalThis.nativeLocaleMethods = {
     number: Number.prototype.toLocaleString, date: Date.prototype.toLocaleString,
@@ -676,4 +676,19 @@ test('allowlisting restores rect methods, Intl constructors, prototype reference
     String.prototype.localeCompare === nativeLocaleMethods.compare &&
     String.prototype.toLocaleUpperCase === nativeLocaleMethods.upper
   `), true);
+});
+
+test('experimental Math rounding does not change canvas/rect noise or locale formatting', () => {
+  const env = setup();
+  env.configure({ settings: { canvas: true, clientRects: true, language: true, timezone: true } });
+  const read = () => env.evaluate(`JSON.stringify({
+    pixels: Array.from(new OffscreenCanvas().getContext('2d').getImageData(0, 0, 60, 20).data),
+    text: new HTMLCanvasElement().getContext('2d').measureText('probe').width,
+    rect: new Element().getBoundingClientRect().toJSON(),
+    number: new Intl.NumberFormat().format(12345.6),
+    date: new Date('2026-09-05T23:30:00Z').toLocaleString()
+  })`);
+  const first = read();
+  env.configure({ settings: { mathRounding: true } });
+  assert.equal(read(), first);
 });

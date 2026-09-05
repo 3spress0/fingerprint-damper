@@ -54,7 +54,22 @@
   absent or blocked by the browser. All probes stay on this page.
 </div>
 
+<details class="note">
+  <summary>Window / worker probe details (stay on this page)</summary>
+  <p>Workers are deliberately unprotected. A matching hash, unavailable API, load error,
+  or timeout is not proof of protection. Worker loading may require a local HTTP server;
+  see <code>test/README.md</code>.</p>
+  <pre id="scope-probes" style="white-space:pre-wrap;overflow-wrap:anywhere">Pending…</pre>
+</details>
+<div class="note">
+  <button id="test-notification" type="button">Test notification request (may show a prompt)</button>
+  <p>Only this explicit button requests permission. With Push guard enabled it should
+  resolve to <code>default</code> without a dialog. Passive state masking does not change real grants.</p>
+</div>
+
 <script src="font-probes.js"></script>
+<script src="probe-values.js"></script>
+<script src="worker-probes.js"></script>
 <script src="selftest.js"></script>
 </body>
 </html>
