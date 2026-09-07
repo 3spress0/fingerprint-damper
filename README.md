@@ -73,9 +73,10 @@ site A, next session   18a9f38d   <- rotates, long-term linking broken
 real canvas            ada5b8c5
 ```
 
-**2. Blend into the biggest crowd.** The GPU string is reported as `Mozilla` — exactly what
-Firefox's own `resistFingerprinting` reports. Inventing a unique fake GPU would make you a
-population of one.
+**2. Blend into the biggest crowd.** WebGL vendor/renderer/version fields are reported as
+`Mozilla` / the matching WebGL version, and its debug-renderer extension is withheld — following
+the broad persona Firefox's own `resistFingerprinting` uses. Inventing a unique fake GPU would
+make you a population of one.
 
 **3. Some things are deliberately left alone.** `navigator.plugins` and `maxTouchPoints` are
 untouched. The SDK we analysed used `plugins.length === 0` as a *headless-bot* signal — emptying it
@@ -95,10 +96,10 @@ Even the default protections can affect some sites; the per-site pause is the es
 | Protection | Behaviour |
 |---|---|
 | Canvas / text metric noise | Up to 32 RGB low-bit flips on pixel readback/serialization (max channel delta 1/255), including main-thread `OffscreenCanvas`. The noise step is O(32); serialization needs a copy and skips canvases over 4 MP. `measureText()` fields get stable <0.01px jitter. This changes exact hashes, not reliable font-availability tests. |
-| GPU masking | `UNMASKED_RENDERER_WEBGL` / `UNMASKED_VENDOR_WEBGL` → `Mozilla`. This was the single highest-entropy item the SDK collected. |
+| WebGL identity / readback | Vendor, renderer and matching version strings → `Mozilla` / `WebGL 1.0` or `2.0`; `WEBGL_debug_renderer_info` is hidden. Standard RGBA/UNSIGNED_BYTE `readPixels()` receives stable, low-bit RGB noise. Other WebGL capabilities, shader behavior, non-byte formats and PBO readback remain native. |
 | Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. Inaudible. A `WeakSet` prevents repeated reads from accumulating drift. |
 | Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. |
-| CPU cores | `hardwareConcurrency` → 8. |
+| Hardware capacity | `hardwareConcurrency` → 8 and, only if the browser already exposes it, `deviceMemory` → 8. No API is invented; worker navigators remain native. |
 | Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell when its getters are patchable; native failures remain failures. Level plus discharge time is a startlingly good short-term cross-site correlator. |
 | Push guard | `Notification.requestPermission()` resolves `"default"` with **no dialog**; service workers matching known ad patterns are refused. |
 | Network block | DNR rules for `9hito.com`, `zdzhk.com`, `kbvcd.com`, `rtmark.net`, `dulotadtor.com`, `abunownon.com`, `dawac.com`, `10zon.com`, `kocmg.com`, `blxwnnw.com` (from the original teardown), plus `lzrikate.com`, `pheegoab.click`, `phenver.com`, `pushno.com`, sourced from [LanikSJ/ubo-filters' PropellerAds Domains Filter List](https://github.com/LanikSJ/ubo-filters) (MIT). |
@@ -121,7 +122,7 @@ feature keeps working. That's the "doesn't hurt UX" line.
 | ClientRects damping | Stable sub-pixel changes to `Element` and `Range` `getBoundingClientRect()` / `getClientRects()`. Native `DOMRect`/`DOMRectList` objects, zero dimensions, and bounding/fragment relationships are preserved (within floating-point precision). No DOM layout is changed, but callers using these measurements for positioning, selection or hit-testing may break. |
 | Default to `en-US` language / locale | Sets navigator language and normalises default locale selection in available `Intl` formatters, numeric/date `toLocale*` methods, string collation and locale-sensitive casing. Supported explicit locale choices and Unicode extensions remain native; empty/unsupported requests fall back to `en-US`. Sites may stop showing your language. |
 | Default to UTC timezone | Uses UTC for default `Intl.DateTimeFormat` and date `toLocale*` formatting, plus zero timezone offsets. Output and `resolvedOptions()` agree. Explicit time zones remain native. Can break calendars, bookings and delivery estimates; other local-time `Date` APIs are not masked. |
-| WebRTC IP filtering | Filters host/STUN ICE candidates. May break peer-to-peer applications without a TURN fallback. |
+| WebRTC address filtering | Withholds host, server-reflexive and peer-reflexive ICE candidates from events, SDP creation/local-description reads and local candidate stats; relay (TURN) paths stay available. While enabled, `getStats()` resolves to a map-shaped sanitized copy. May break peer-to-peer applications without TURN and changes diagnostics. |
 
 Locale/timezone settings affect **new formatters** and subsequent `toLocale*` calls. Already-created
 formatter objects and already-returned measurement snapshots keep their values; reload after a
@@ -135,15 +136,16 @@ selected HTTP headers can now be removed with the separate lockdown tier.
 
 ## Global lockdown — experimental, extreme breakage
 
-All **eight controls are off by default**, separate from the existing API options:
+All **nine controls are off by default**, separate from the existing API options:
 
 - Block site JavaScript (inline and external) instead of trying to emulate every API.
-- Force a browser **opaque-origin document sandbox**, without script/same-origin escape tokens.
+- Force a browser **opaque-origin document sandbox**, with no script/same-origin escape tokens and explicit anti-framing policy.
 - Block new workers and service-worker registrations on covered documents.
 - Block embedded frame/object loads.
 - Block fetch/XHR, new WebSockets, beacons, pings and CSP reports.
 - Text-only loading: block eligible secondary requests, scripts, media/fonts and external styling.
 - Strip outgoing/incoming network cookies, without clearing existing browser data.
+- Disable new HTTP cache writes and remove ETag/Last-Modified validators; it does not clear old or service-worker caches.
 - Remove selected identity headers (UA, language, referrer, known UA client hints).
 
 These are **global kill switches**, including on API-paused sites. Settings has a confirmed
@@ -199,9 +201,10 @@ The new rule/settings/UI tests use mocked extension APIs, not native DNR enforce
 `test/browser-regression.html` exercises the patches against real browser APIs with native
 references captured first; open it with the installed extension **disabled**. See
 [test/README.md](test/README.md) for locale-matrix commands, font-probe interpretation and the
-remaining manual checks. The self-test includes Element/Range hashes, actual locale output,
-voice/device counts, passive permission states, Math hashes, and window/worker comparisons.
-Local-font and worker probes are explicitly labelled **unprotected**. Worker loading may require
+remaining manual checks. The self-test includes WebGL byte readback, Element/Range hashes, actual
+locale output, hardware capacity, voice/device counts, passive permission states, Math hashes, and
+window/worker comparisons. Local-font and worker probes are explicitly labelled **unprotected**.
+Worker loading may require
 a local HTTP server; a failure or matching value is not proof of protection. The notification
 request test now requires an explicit button click rather than running automatically.
 
@@ -272,9 +275,21 @@ than claiming success.
   event timing and saved native getters can still reveal changes. Native rejections stay rejections.
   With the battery switch off, `getBattery()` returns its native result instead of an extension-made
   error.
+- **WebGL and capacity masking are partial.** The standard byte-array `readPixels()` path is damped,
+  but shader precision, limits, extensions other than debug-renderer info, non-byte/PBO readback and
+  worker/OffscreenCanvas WebGL remain native. `deviceMemory` is masked only when it already exists;
+  no worker navigator is altered.
+- **WebRTC filtering is page-world compatibility masking, not transport isolation.** It cannot
+  retract an address exposed before injection or through a saved native reference, block browser
+  transport itself, or make latency/network characteristics anonymous. The opt-in sanitizes local
+  candidate fields in returned stats but changes `getStats()` report identity; remote candidates and
+  the broader WebRTC API remain native.
 - **Math rounding is experimental, not engine standardisation.** Exact identities and numerical
   algorithms can change. Arithmetic operators, WebAssembly, unpatched globals and rounding-boundary
   differences remain available to probes. It is deliberately off by default.
+- **Cache lockdown is not storage cleanup or a service-worker bypass.** It removes validators and
+  sets `Cache-Control: no-store` only on eligible responses after the rule is active. Existing HTTP
+  cache entries, BFCache, service-worker caches and URL identifiers remain outside its control.
 - **TLS/HTTP-stack fingerprinting remains outside scope.** Optional removal of selected HTTP
   headers is not transport normalization. Page-world hooks cannot control the TLS
   ClientHello or HTTP/2 stack/header order. An ordinary pass-through VPN/SOCKS/CONNECT proxy does not

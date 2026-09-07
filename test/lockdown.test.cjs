@@ -23,8 +23,8 @@ const matches = (rule, url, type) => new RegExp(rule.condition.regexFilter, 'i')
   !rule.condition.excludedResourceTypes?.includes(type);
 const blocked = (settings, url, type) => rules(settings).some(rule => rule.action.type === 'block' && matches(rule, url, type));
 
-test('all eight lockdown controls default off and install no rules', () => {
-  assert.equal(policy.keys.length, 8);
+test('all nine lockdown controls default off and install no rules', () => {
+  assert.equal(policy.keys.length, 9);
   assert.ok(Object.values(policy.defaults).every(value => value === false));
   assert.deepEqual(rules(), []);
   assert.deepEqual(rules(policy.defaults), []);
@@ -39,13 +39,19 @@ test('script denial covers inline policy, workers and HTTP script requests', () 
   assert.equal(blocked({ lockScripts: true }, 'https://site.test/image.png', 'image'), false);
 });
 
-test('sandbox has no script/origin escape tokens and restricts forms and embeds', () => {
+test('sandbox has no script/origin escape tokens, prevents ancestor framing, and restricts forms and embeds', () => {
+  const sandboxRules = rules({ lockSandbox: true });
   const value = csp({ lockSandbox: true });
   assert.ok(value.split('; ').includes('sandbox'));
   assert.doesNotMatch(value, /allow-/);
-  for (const directive of ['script-src', 'worker-src', 'object-src', 'frame-src', 'form-action', 'base-uri']) {
-    assert.ok(value.includes(directive + " 'none'"));
+  // frame-ancestors has no default-src fallback: it must be explicit.
+  for (const directive of ['script-src', 'worker-src', 'child-src', 'object-src', 'frame-src',
+    'form-action', 'base-uri', 'frame-ancestors']) {
+    assert.ok(value.includes(directive + " 'none'"), directive);
   }
+  const frameHeader = sandboxRules.find(rule => rule.id === 15001).action.responseHeaders
+    .find(header => header.header === 'x-frame-options');
+  assert.deepEqual(frameHeader, { header: 'x-frame-options', operation: 'set', value: 'DENY' });
 });
 
 test('worker-only and embed-only controls do not masquerade as global script denial', () => {
@@ -90,8 +96,24 @@ test('cookie removal is both directions and header minimization does not strip s
   assert.deepEqual(identity.action.responseHeaders, [{ header: 'referrer-policy', operation: 'set', value: 'no-referrer' }]);
 });
 
+test('cache lockdown removes validators and stops future HTTP cache writes without touching request safety headers', () => {
+  const cache = rules({ lockCache: true }).find(rule => rule.id === 15003);
+  assert.deepEqual(cache.action.requestHeaders, [
+    { header: 'if-none-match', operation: 'remove' },
+    { header: 'if-modified-since', operation: 'remove' }
+  ]);
+  assert.deepEqual(cache.action.responseHeaders, [
+    { header: 'etag', operation: 'remove' },
+    { header: 'last-modified', operation: 'remove' },
+    { header: 'cache-control', operation: 'set', value: 'no-store, max-age=0' }
+  ]);
+  for (const header of ['cookie', 'authorization', 'if-match', 'if-unmodified-since']) {
+    assert.ok(cache.action.requestHeaders.every(item => item.header !== header), header);
+  }
+});
+
 test('every combination composes at most three rules without replacing server CSP or adding allow rules', () => {
-  for (let mask = 0; mask < 256; mask++) {
+  for (let mask = 0; mask < 1 << policy.keys.length; mask++) {
     const selected = Object.fromEntries(policy.keys.map((key, i) => [key, !!(mask & (1 << i))]));
     const result = rules(selected);
     assert.ok(result.length <= 3);

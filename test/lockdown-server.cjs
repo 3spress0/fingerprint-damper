@@ -82,7 +82,7 @@ The server intentionally rejects sockets even at baseline; only the server log d
 <img src="/pixel.png" width="32" height="32" alt="Local image probe">
 <iframe src="/frame" title="Local embed probe"></iframe>
 <form action="/submitted" method="post"><button>Explicit test form submission (navigates)</button></form>
-<p><a href="/prime-cookie">Set the fake local session cookie</a> (explicit action only).
+<p><a href="/prime-cookie">Set the fake local session cookie</a> (explicit action only). <a href="/cache-probe" target="_blank" rel="noopener">Open the cache-validator fixture</a>, then reload it normally and inspect its response headers and the server event booleans.
 No real cookie values, user-agent strings or authorization are logged. No grants/capture/playback,
 service-worker registrations or worklets are requested.</p>
 <script>document.getElementById('inline').textContent='INLINE SCRIPT RAN';</script>
@@ -94,7 +94,7 @@ service-worker registrations or worklets are requested.</p>
 
 function createFixture() {
   const events = [];
-  const paths = new Set(['/', '/events', '/prime-cookie', '/probe.js', '/worker.js', '/module.mjs',
+  const paths = new Set(['/', '/events', '/prime-cookie', '/cache-probe', '/probe.js', '/worker.js', '/module.mjs',
     '/shared.js', '/style.css', '/pixel.png', '/frame', '/signal', '/socket', '/submitted']);
   function record(req) {
     const url = new URL(req.url, 'http://fixture.invalid');
@@ -103,6 +103,7 @@ function createFixture() {
     events.push({ path: paths.has(url.pathname) ? url.pathname : 'other',
       signal: ['fetch', 'beacon'].includes(kind) ? kind : null,
       probeCookie: /(?:^|;\s*)__fpd_lockdown_probe=1(?:;|$)/.test(req.headers.cookie || ''),
+      etagValidatorPresent: !!req.headers['if-none-match'], modifiedValidatorPresent: !!req.headers['if-modified-since'],
       userAgentPresent: !!req.headers['user-agent'], languagePresent: !!req.headers['accept-language'],
       refererPresent: !!req.headers.referer });
     if (events.length > 256) events.shift();
@@ -123,6 +124,14 @@ function createFixture() {
     if (path === '/prime-cookie') {
       res.setHeader('Set-Cookie', '__fpd_lockdown_probe=1; Path=/; SameSite=Lax');
       return res.end('<p>Fake session-cookie response sent (may be stripped). <a href="/">Return to the check</a>.</p>');
+    }
+    if (path === '/cache-probe') {
+      // Deliberately cacheable and tagged so lockCache can be verified without
+      // recording a validator value. The event log exposes booleans only.
+      res.setHeader('Cache-Control', 'private, max-age=600');
+      res.setHeader('ETag', '"fpd-cache-probe-v1"');
+      res.setHeader('Last-Modified', 'Tue, 01 Sep 2026 00:00:00 GMT');
+      return res.end('<p>Cache validator fixture. Reload normally, then inspect response headers and /events.</p>');
     }
     if (['/probe.js', '/worker.js', '/module.mjs', '/shared.js'].includes(path)) {
       res.setHeader('Content-Type', 'text/javascript');

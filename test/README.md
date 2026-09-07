@@ -25,10 +25,11 @@ entry scripts' bootstrap/protocol; these are **not** tests of Firefox's worker
 loader, CSP, GPU, permissions or SharedWorker lifecycle. Font-probe mocks likewise
 do not prove which local fonts a browser exposes.
 
-The lockdown tests cover all 256 switch combinations, global rule scope, server-CSP
-append semantics, migration/restart, serialized saves, persistence/rollback failures,
-UI consent/recovery and the local HTTP fixture. These use mocked extension APIs and
-a simplified rule matcher: **not native DNR/CSP or sandbox validation**.
+The lockdown tests cover all 512 combinations of the nine switches, global rule scope,
+server-CSP append semantics, anti-framing/cache-header construction, migration/restart,
+serialized saves, persistence/rollback failures, UI consent/recovery and the local HTTP
+fixture. These use mocked extension APIs and a simplified rule matcher: **not native
+DNR/CSP or sandbox validation**.
 
 ## Real browser regression fixture
 
@@ -38,10 +39,11 @@ a simplified rule matcher: **not native DNR/CSP or sandbox validation**.
 4. All checks should pass. Repeat in a non-English browser profile, preferably
    with a non-UTC time zone. Reload to rerun; the final test restores the native APIs.
 
-This checks native rect/list and BatteryManager behavior, locale formatting, passive masking,
-Math results and restoration. Unsupported/rejected passive APIs are labelled as skipped,
-not successful protection. No automatic capture, speech playback or permission
-requests are made. The window checks can run from a file without dependencies;
+This checks native rect/list and BatteryManager behavior, WebGL debug/readback behavior,
+hardware-capacity masking, locale formatting, passive masking, Math results and restoration.
+Unsupported/rejected passive APIs are labelled as skipped, not successful protection. No
+automatic capture, speech playback or permission requests are made. The window checks can
+run from a file without dependencies;
 the worker audit may need HTTP (see below).
 
 It does **not** certify MAIN/ISOLATED-world delivery, the startup race, actual
@@ -69,6 +71,10 @@ use `test/selftest.html` instead:
 - Where the browser exposes `navigator.getBattery()`, verify the default reads as full/charging,
   then turn **Neutralise Battery API** off and verify its native result/rejection is restored.
   Battery event timing remains a deliberate compatibility/privacy boundary.
+- Verify default WebGL behavior in the self-test: debug-renderer info should be unavailable,
+  vendor/renderer should read as Mozilla, and standard byte `readPixels()` hashes should be
+  stable across reloads. Disable the WebGL switch to compare native output; shader/limit/PBO
+  paths are deliberately outside this check.
 - Enable voice/device hiding separately. The corresponding lists should be empty,
   while permission queries/capture/playback remain independent. A native empty list
   alone does not demonstrate protection. Check actual voice/device pickers manually
@@ -106,8 +112,8 @@ Then open `http://127.0.0.1:8000/test/selftest.html` or
 `http://127.0.0.1:8000/test/browser-regression.html`. Do not expose the repository's
 HTTP server to the internet. No server is started by the diagnostic scripts.
 
-With window controls enabled, compare Math/canvas hashes, GPU, locale, core count,
-font-set capability checks and whichever passive APIs a worker exposes. Workers
+With window controls enabled, compare Math/canvas hashes, GPU/readback, locale, CPU/device-memory
+values, font-set capability checks and whichever passive APIs a worker exposes. Workers
 are deliberately **not API-patched**. Lockdown may deny new workers on covered HTTP
 pages; this is different from normalizing worker APIs. Equal values, absent APIs, errors and timeouts
 are not evidence of protection. The report omits raw voice names/device IDs and
@@ -133,10 +139,11 @@ relative URLs. Do not expose it unnecessarily.
 
 The fixture does **not** emulate the extension. It serves an original CSP, static
 script markers, classic/module/shared/blob workers, a frame, image/stylesheet,
-fetch/beacon and a deliberately rejected WebSocket handshake. `/events` reports
-bounded, in-memory observations with header-presence booleans, never raw identifiers.
-No service worker is registered and no grants, capture or playback are requested.
-An explicit link primes only `__fpd_lockdown_probe=1`, a fake local session cookie.
+fetch/beacon and a deliberately rejected WebSocket handshake. Its explicit cache fixture
+is cacheable and carries fixed ETag/Last-Modified headers. `/events` reports bounded,
+in-memory header-presence/validator-presence booleans, never raw identifiers. No service
+worker is registered and no grants, capture or playback are requested. An explicit link
+primes only `__fpd_lockdown_probe=1`, a fake local session cookie.
 
 Check each switch alone, then the combined maximum preset; bypass cache on reload:
 
@@ -145,12 +152,13 @@ Check each switch alone, then the combined maximum preset; bypass cache on reloa
 | All lockdown off | Both inline/external script markers run; supported workers reply; server sees secondary requests. Record baseline failures rather than assuming support. |
 | Preserve server CSP | The original `script-src-attr 'none'` must remain in response headers. With only worker denial enabled, the attribute control must say the original restriction is intact, never “SERVER CSP WAS LOST.” |
 | Script denial | Inline/external markers stay at DID NOT RUN; confirm the added enforcing CSP in the main document response. This is not a passing JS-driven self-test. |
-| Sandbox | Inspect the appended bare `sandbox`, without any allow tokens. Forms/popups/downloads must not escape. In developer tools, check opaque-origin/storage restrictions. Disabling rules doesn't release the already loaded document. |
+| Sandbox | Inspect the appended bare `sandbox`, without any allow tokens, plus `frame-ancestors 'none'` and `X-Frame-Options: DENY`. Forms/popups/downloads must not escape and the document must refuse embedding. In developer tools, check opaque-origin/storage restrictions. Disabling rules doesn't release the already loaded document. |
 | New workers | Classic, module, shared and blob workers that succeeded at baseline should be denied. Inspect policy violations, not just generic worker errors. Existing workers/service workers are a separate gap. |
 | Embeds | Covered frame/object loads denied. Initial empty frames are not claimed to be forbidden. |
 | Connection denial | Compare server events: no fetch/beacon/socket attempts from covered loads. A socket error alone proves nothing because the fixture intentionally rejects baseline handshakes too. |
 | Secondary-request seal | Only initial/top-level visits remain in this fixture's server events; no image, CSS, frame, script or API requests. Verify policy headers even if the page looks empty. |
 | Cookie stripping | Prime with locks off, enable cookie stripping, reload. Server `probeCookie` should be false; incoming Set-Cookie should be removed. With JS still allowed, the old fake cookie can remain JS-visible—this switch doesn't erase it. |
+| Cache identifiers | With only cache lockdown enabled, open `/cache-probe`; its response should show no ETag/Last-Modified and `Cache-Control: no-store, max-age=0`. Reload normally and inspect `/events`: validator-presence booleans should stay false. This cannot prove old HTTP/BFCache/service-worker entries were cleared. |
 | Header removal | Compare actual request headers/server-presence booleans for UA, language and referrer. Origin/auth/security headers must not be removed. No claim of TLS/header-order normalization. |
 | API pause | Global rules remain active on the paused HTTP origin. UI wording must not suggest otherwise. |
 | Emergency off | Disable all lockdown in popup/Settings; reload bypassing cache. Original baseline behavior returns on fresh documents. Other API/ad-network preferences remain unchanged; no tabs auto-reload. |

@@ -19,6 +19,7 @@
       realm: typeof document === 'undefined' ? 'worker' : 'window',
       language: nav.language || null,
       cores: nav.hardwareConcurrency || null,
+      memory: 'deviceMemory' in nav ? nav.deviceMemory : null,
       capabilities: Object.fromEntries(['OffscreenCanvas', 'FontFace', 'AudioContext', 'OfflineAudioContext',
         'SpeechSynthesis', 'MediaDevices', 'PermissionStatus'].map(name => [name, typeof globalThis[name] !== 'undefined']))
     };

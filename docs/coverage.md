@@ -42,6 +42,33 @@ Previously returned voice/device lists remain readable. Early page code can also
 read opt-in surfaces before settings reach the page-world script. Pause/reload and
 cached-object limitations still apply; these controls are not an atomic browser policy.
 
+## WebGL, hardware capacity and WebRTC boundaries
+
+The default WebGL control keeps the native call path first for receiver/error behavior, then
+normalizes vendor, renderer and matching version strings. It withholds
+`WEBGL_debug_renderer_info` both from `getExtension()` and from
+`getSupportedExtensions()`. Standard RGBA/`UNSIGNED_BYTE` `readPixels()` calls made with a
+byte view receive the same bounded, stable RGB low-bit changes as canvas reads; alpha is left
+alone. Float/integer formats, unusual views, pixel-pack-buffer offset paths, shader precision,
+limits, non-debug extensions and all worker WebGL stay native. This is hash damping, not a
+complete GPU persona or graphics sandbox.
+
+The default hardware-capacity control reports 8 for `navigator.hardwareConcurrency` and, only
+when the browser already has a configurable `Navigator.prototype.deviceMemory` getter, reports
+8 there too. It never adds `deviceMemory` to Firefox or changes worker navigators. Native getter
+receiver errors still occur before a value is masked; disabling/allowlisting restores native
+values/descriptors.
+
+WebRTC address filtering is an opt-in page-world compatibility layer. It withholds host,
+server-reflexive and peer-reflexive candidates from `icecandidate` listeners/property handlers,
+`createOffer()`/`createAnswer()` results, `setLocalDescription()` input, and local-description
+getters. It leaves relay/TURN candidates available. While enabled, `getStats()` resolves to a
+new `Map` whose local-candidate values retain non-address metadata but neutralize modern and
+legacy address/port fields; this deliberately changes the native report identity. Remote
+candidate records, connection timing, broader WebRTC operations, existing references, early page
+code, other realms and browser transport are not controlled. A page can still detect or replace
+these hooks, so this is not equivalent to browser-enforced relay-only ICE policy.
+
 ## Experimental Math rounding
 
 When enabled, these Math functions use their native implementation and then round

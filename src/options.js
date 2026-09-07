@@ -15,14 +15,14 @@ const api = typeof browser !== 'undefined' ? browser : chrome;
 const SAFE = [
   ['canvas', 'Canvas noise',
    'Adds small pixel and measureText() noise to main-thread canvases, including OffscreenCanvas. Changes exact hashes; does not hide installed fonts.'],
-  ['webgl', 'Mask GPU string',
-   'Reports the renderer as "Mozilla", matching Firefox\u2019s own resistFingerprinting crowd.'],
+  ['webgl', 'Dampen WebGL identity / readback',
+   'Masks vendor, renderer and version fields, hides WEBGL_debug_renderer_info, and stably changes standard RGBA/UNSIGNED_BYTE readPixels() output. Other WebGL capability and shader surfaces remain native.'],
   ['audio', 'Audio noise',
    'Perturbs ~32 samples by 1e-7. Inaudible; defeats AudioContext hashing.'],
   ['geometry', 'Normalise window geometry',
    'Zeroes window position, reports outer size as inner size, flattens colour depth. Screen resolution is left real so responsive layouts still work.'],
-  ['concurrency', 'Fix CPU core count',
-   'Always reports 8 cores.'],
+  ['concurrency', 'Normalise hardware capacity',
+   'Reports 8 CPU cores and, only where the browser already exposes it, 8 GB deviceMemory. It does not add APIs or patch worker navigators.'],
   ['battery', 'Neutralise Battery API',
    'Reports full and charging while retaining the native BatteryManager shell where available. Battery level is a strong short-term cross-site correlator.'],
   ['pushGuard', 'Block push-ad funnels',
@@ -48,8 +48,8 @@ const RISKY = [
    'Uses UTC for default date formatting and timezone offsets. Explicit time zones and other Date methods stay native. Can break calendars and bookings.'],
   ['language', 'Default to en-US language / locale',
    'Normalises navigator language, Intl defaults and built-in locale formatting. Supported explicit locale choices stay native. Sites may stop showing your language.'],
-  ['webrtc', 'Block WebRTC IP leaks',
-   'Strips your public IP from WebRTC ICE candidates. Breaks peer-to-peer calling apps with no TURN server \u2014 most big ones (Meet, Zoom, Discord) have one and are fine.']
+  ['webrtc', 'Block WebRTC address leaks',
+   'Withholds host, server-reflexive and peer-reflexive ICE candidates from events, SDP and local stats; relay (TURN) paths remain. Local getStats() becomes a map-shaped sanitized copy. Peer-to-peer apps without TURN can fail.']
 ];
 
 let settings = {};

@@ -35,10 +35,11 @@
 </table>
 
 <div class="note">
-  <strong>What to expect when it is working:</strong> the GPU string becomes
-  <code>Mozilla</code>, the canvas and audio hashes differ from the un-damped run
-  (and differ again on a different site), battery reads full, cores read 8,
-  window position reads 0, and the notification prompt resolves to
+  <strong>What to expect when it is working:</strong> the WebGL renderer becomes
+  <code>Mozilla</code>, its standard pixel hash and the canvas/audio hashes differ from
+  the un-damped run (and differ again on a different site), battery reads full, cores
+  read 8 (as does device memory only when the browser exposes it), window position reads
+  0, and the notification prompt resolves to
   <code>default</code> without ever showing a dialog.
   Reload twice with the extension on — the hashes should stay <em>identical</em>
   between reloads. Stability is the point; a hash that changes every reload is

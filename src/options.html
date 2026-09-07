@@ -59,9 +59,10 @@
   <h2>Opt-in — known to break things</h2>
   <div id="risky"></div>
   <div class="warn">
-    Timezone and language spoofing will misdate calendars, booking sites and
-    delivery estimates, and will flip some sites into the wrong language.
-    Turn these on only if you accept that.
+    Timezone and language spoofing can misdate calendars, bookings and delivery
+    estimates, or switch sites into the wrong language. WebRTC filtering removes
+    direct peer paths and changes local diagnostics. Turn these on only if you
+    accept that.
   </div>
 
   <h2>Paused sites</h2>
@@ -75,7 +76,8 @@
     All off by default. Browser-enforced rules, not fake API values. These switches apply globally to eligible
     HTTP(S) pages and requests, including API-paused sites. Many sites become static or blank.
     No claim of zero information: IP/TLS, the initial visit, old workers/connections,
-    cached/service-worker responses and stored data remain concerns. No data is erased.
+    cached/service-worker responses and stored data remain concerns. Cache/cookie locks affect
+    future eligible traffic only; no data is erased.
   </div>
   <div id="lockdown"></div>
   <button id="lock-max" type="button">Enable all lockdown controls…</button>

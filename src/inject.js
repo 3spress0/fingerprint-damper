@@ -51,7 +51,7 @@
     clientRects: false, // opt-in: affects positioning, selection, and hit-testing
     timezone: false,   // opt-in: breaks calendars/booking flows
     language: false,   // opt-in: breaks localisation
-    webrtc: false,      // opt-in: breaks P2P calls with no TURN fallback
+    webrtc: false,     // opt-in: removes direct candidate paths / alters stats
     speechVoices: false, // opt-in: voice pickers may stop working
     mediaDevices: false, // opt-in: camera/microphone/speaker pickers may break
     permissionStates: false, // opt-in: sites may show redundant permission UI
@@ -176,18 +176,27 @@
   const NOISE_PIXELS = 32;
   const noisedBuffers = new WeakSet();
 
-  function noiseImageData(imgData, seed) {
-    const d = imgData.data;
-    const px = d.length >> 2;
-    if (!px) return;
+  function noiseRgbaBytes(bytes, seed, pixels) {
+    // Avoid bitwise length math here: typed-array byte lengths are not limited
+    // to signed 32-bit values. The optional count is capped to complete RGBA
+    // pixels so no trailing/non-pixel bytes are touched.
+    const availablePixels = Math.floor(bytes.length / 4);
+    const requestedPixels = pixels === undefined ? availablePixels : Math.floor(pixels);
+    const px = Math.min(Math.max(0, requestedPixels), availablePixels);
+    if (!px) return false;
     const rnd = mulberry32(seed);
     const n = Math.min(NOISE_PIXELS, px);
     for (let i = 0; i < n; i++) {
       const p = Math.floor(rnd() * px) << 2;
-      d[p] ^= 1;
-      d[p + 1] ^= 1;
-      d[p + 2] ^= 1;
+      bytes[p] ^= 1;
+      bytes[p + 1] ^= 1;
+      bytes[p + 2] ^= 1;
     }
+    return true;
+  }
+
+  function noiseImageData(imgData, seed) {
+    return noiseRgbaBytes(imgData.data, seed);
   }
 
   const rawGetImageData = window.CanvasRenderingContext2D
@@ -396,6 +405,30 @@
   const GL_VENDOR = 0x1f00;          // 7936
   const GL_RENDERER = 0x1f01;        // 7937
   const GL_VERSION = 0x1f02;         // 7938
+  const GL_RGBA = 0x1908;            // 6408
+  const GL_UNSIGNED_BYTE = 0x1401;   // 5121
+  const DEBUG_RENDERER_INFO = 'WEBGL_debug_renderer_info';
+
+  // Standard canvas/WebGL hashers read RGBA/UNSIGNED_BYTE pixels into a
+  // caller-provided byte view. Keep the native read (and any native errors)
+  // first, then touch only its written span. Float/integer formats and PBO
+  // offset overloads stay native rather than risking corrupting app data.
+  function noiseWebGLReadback(args) {
+    const [x, y, width, height, format, type, pixels, dstOffset] = args;
+    if (format !== GL_RGBA || type !== GL_UNSIGNED_BYTE || !pixels ||
+        !ArrayBuffer.isView(pixels) || pixels.BYTES_PER_ELEMENT !== 1 ||
+        !Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+        width <= 0 || height <= 0) return false;
+    const offset = dstOffset === undefined ? 0 : dstOffset;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > pixels.byteLength) return false;
+    const available = pixels.byteLength - offset;
+    // Do not alter a partial destination after an undersized native call. For
+    // a one-byte element view dstOffset is also a byte offset.
+    if (width > Math.floor(available / 4 / height)) return false;
+    const bytes = new Uint8Array(pixels.buffer, pixels.byteOffset + offset, available);
+    const pixelCount = width * height;
+    return noiseRgbaBytes(bytes, baseSeed() ^ fnv1a(`${x},${y}|${width}x${height}`), pixelCount);
+  }
 
   for (const ctor of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
     if (!ctor) continue;
@@ -405,12 +438,53 @@
     const versionStr = ctor === window.WebGL2RenderingContext ? 'WebGL 2.0' : 'WebGL 1.0';
     patchMethod(ctor.prototype, 'getParameter', (orig) =>
       function getParameter(p) {
+        // Preserve WebGL's receiver and error behavior before substituting a
+        // generic value for the sensitive enums below.
+        const value = orig.apply(this, arguments);
         if (active && cfg.webgl) {
           if (p === UNMASKED_VENDOR || p === GL_VENDOR) { report('webgl'); return 'Mozilla'; }
           if (p === UNMASKED_RENDERER || p === GL_RENDERER) { report('webgl'); return 'Mozilla'; }
           if (p === GL_VERSION) { report('webgl'); return versionStr; }
         }
-        return orig.apply(this, arguments);
+        return value;
+      });
+    patchMethod(ctor.prototype, 'getExtension', (orig) =>
+      function getExtension(name) {
+        const extension = orig.apply(this, arguments);
+        // Call the native method first for its coercion, receiver checks and
+        // extension lifecycle; then withhold the high-entropy debug object.
+        // Do not touch properties of another extension's exotic return value
+        // while masking is off (or let a hostile getter break this API).
+        if (!(active && cfg.webgl)) return extension;
+        let isDebugInfo = false;
+        try {
+          isDebugInfo = !!extension && extension.UNMASKED_VENDOR_WEBGL === UNMASKED_VENDOR &&
+            extension.UNMASKED_RENDERER_WEBGL === UNMASKED_RENDERER;
+        } catch (_) {}
+        if (name === DEBUG_RENDERER_INFO || isDebugInfo) {
+          report('webgl');
+          return null;
+        }
+        return extension;
+      });
+    patchMethod(ctor.prototype, 'getSupportedExtensions', (orig) =>
+      function getSupportedExtensions() {
+        const extensions = orig.apply(this, arguments);
+        if (active && cfg.webgl && Array.isArray(extensions) && extensions.includes(DEBUG_RENDERER_INFO)) {
+          report('webgl');
+          return extensions.filter(name => name !== DEBUG_RENDERER_INFO);
+        }
+        return extensions;
+      });
+    patchMethod(ctor.prototype, 'readPixels', (orig) =>
+      function readPixels() {
+        const result = orig.apply(this, arguments);
+        if (active && cfg.webgl) {
+          try {
+            if (noiseWebGLReadback(arguments)) report('webgl');
+          } catch (_) {}
+        }
+        return result;
       });
   }
 
@@ -516,12 +590,17 @@
 
   // ======================================================== 5. NAVIGATOR BITS
   if (window.Navigator) {
-    if (cfg.concurrency) {
-      const d = Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency');
+    // Do not invent deviceMemory where Firefox does not expose it. If a browser
+    // does expose either capacity getter, keep the two coarse values coherent.
+    // Invoke the native getter first even while masking, so an invalid receiver
+    // and native getter errors retain their original behavior.
+    for (const [name, value] of [['hardwareConcurrency', 8], ['deviceMemory', 8]]) {
+      const d = Object.getOwnPropertyDescriptor(Navigator.prototype, name);
       const og = d && d.get;
-      patchGetter(Navigator.prototype, 'hardwareConcurrency', function () {
-        if (active && cfg.concurrency) return 8;
-        return og ? og.call(this) : 8;
+      if (!og) continue;
+      patchGetter(Navigator.prototype, name, function () {
+        const nativeValue = og.call(this);
+        return active && cfg.concurrency ? value : nativeValue;
       });
     }
 
@@ -742,61 +821,213 @@
   }
 
   // ============================================================== 8. WEBRTC
-  // Off by default: strips "host" (LAN, already mDNS-obfuscated by Firefox)
-  // and "srflx" (public IP via STUN — the actual VPN-bypass leak) candidates,
-  // leaving only "relay" (TURN) candidates. Handles both trickle-ICE events
-  // and non-trickle SDP blobs. Opt-in because P2P apps with no TURN fallback
-  // will simply fail to connect.
-  const ICE_LEAK = /\b(typ (srflx|host))\b/;
+  // Off by default: withhold host (LAN/mDNS), server-reflexive (public STUN)
+  // and peer-reflexive candidates, leaving only relay (TURN) paths. Cover both
+  // trickle events and SDP reads/creation. Apps without TURN can fail, so this
+  // remains an explicit opt-in rather than a misleading partial default.
+  const ICE_LEAK = /\btyp\s+(?:srflx|prflx|host)\b/i;
 
   function stripSdp(sdp) {
     if (typeof sdp !== 'string') return sdp;
-    return sdp.split('\r\n').filter((l) => !(l.startsWith('a=candidate:') && ICE_LEAK.test(l))).join('\r\n');
+    // Preserve the caller's exact CRLF/LF separators and trailing newline while
+    // removing only candidate lines that disclose a non-relay address.
+    return (sdp.match(/[^\r\n]*(?:\r\n|\n|$)/g) || []).filter(line => {
+      const body = line.replace(/[\r\n]+$/, '');
+      return !(body.startsWith('a=candidate:') && ICE_LEAK.test(body));
+    }).join('');
+  }
+
+  function maskDescription(desc, nativeShell = false) {
+    if (!desc || typeof desc !== 'object') return desc;
+    let sdp, type;
+    try {
+      sdp = desc.sdp;
+      if (typeof sdp !== 'string') return desc;
+      type = desc.type;
+    } catch (error) {
+      // Reading these dictionary members is what the native operation does too.
+      // Preserve a getter's original exception rather than reading it twice.
+      throw error;
+    }
+    const clean = stripSdp(sdp);
+    if (clean === sdp) return desc;
+    const init = { type, sdp: clean };
+    report('webrtc');
+    // createOffer/createAnswer and setLocalDescription accept/return a
+    // RTCSessionDescriptionInit dictionary. Only native local-description
+    // getters receive a native shell, preserving their expected prototype.
+    if (nativeShell && window.RTCSessionDescription) {
+      try { return new window.RTCSessionDescription(init); } catch (_) {}
+    }
+    return init;
+  }
+
+  function filtersIceEvent(ev) {
+    if (!(active && cfg.webrtc) || !ev) return false;
+    try {
+      const candidate = ev.candidate;
+      return !!candidate && ICE_LEAK.test(candidate.candidate || '');
+    } catch (_) { return false; }
   }
 
   if (window.RTCPeerConnection) {
-    patchMethod(RTCPeerConnection.prototype, 'setLocalDescription', (orig) =>
-      function setLocalDescription(desc, ...rest) {
-        if (active && cfg.webrtc && desc && desc.sdp) {
-          report('webrtc');
-          const clean = stripSdp(desc.sdp);
-          desc = window.RTCSessionDescription
-            ? new RTCSessionDescription({ type: desc.type, sdp: clean })
-            : { type: desc.type, sdp: clean };
+    const peerPrototype = RTCPeerConnection.prototype;
+    // When present, this native accessor offers a side-effect-free receiver
+    // check before we inspect a caller-provided description. Without it, a
+    // bad receiver could make an untrusted sdp getter run before the native
+    // setLocalDescription() brand error.
+    const localDescriptionDescriptor = Object.getOwnPropertyDescriptor(peerPrototype, 'localDescription');
+    const nativePeerReceiverCheck = localDescriptionDescriptor && typeof localDescriptionDescriptor.get === 'function'
+      ? localDescriptionDescriptor.get
+      : null;
+    patchMethod(peerPrototype, 'setLocalDescription', (orig) =>
+      function setLocalDescription() {
+        const args = Array.from(arguments);
+        if (active && cfg.webrtc && args.length) {
+          if (nativePeerReceiverCheck) nativePeerReceiverCheck.call(this);
+          args[0] = maskDescription(args[0]);
         }
-        return orig.call(this, desc, ...rest);
+        return orig.apply(this, args);
       });
 
-    const filterCandidate = (ev) =>
-      active && cfg.webrtc && ev && ev.candidate && ICE_LEAK.test(ev.candidate.candidate || '');
-
-    const onIceDesc = Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate');
-    if (onIceDesc && onIceDesc.configurable) {
-      Object.defineProperty(RTCPeerConnection.prototype, 'onicecandidate', {
-        configurable: true,
-        get() { return this.__fpdOnIce; },
-        set(h) {
-          this.__fpdOnIce = h;
-          onIceDesc.set.call(this, typeof h !== 'function' ? h : function (ev) {
-            if (filterCandidate(ev)) { report('webrtc'); return; }
-            return h.call(this, ev);
-          });
-        }
+    for (const method of ['createOffer', 'createAnswer']) {
+      patchMethod(peerPrototype, method, (orig) => function createDescription() {
+        const result = orig.apply(this, arguments); // native receiver/errors first
+        if (!(active && cfg.webrtc) || !result || typeof result.then !== 'function') return result;
+        return result.then(desc => active && cfg.webrtc ? maskDescription(desc) : desc);
       });
-      restore.push(() => { try { Object.defineProperty(RTCPeerConnection.prototype, 'onicecandidate', onIceDesc); } catch (_) {} });
     }
 
-    // addEventListener lives on EventTarget.prototype, not RTCPeerConnection's.
-    patchMethod(EventTarget.prototype, 'addEventListener', (orig) =>
-      function addEventListener(type, listener, opts) {
-        if (type === 'icecandidate' && typeof listener === 'function') {
-          return orig.call(this, type, function (ev) {
-            if (filterCandidate(ev)) { report('webrtc'); return; }
-            return listener.call(this, ev);
-          }, opts);
+    // RTCIceCandidateStats can reveal the same local address through getStats.
+    // Return a map-shaped copy only while the opt-in is on: every local-candidate
+    // record keeps its useful non-address metadata, but direct address/port fields
+    // (including legacy names) become neutral. This necessarily changes report
+    // identity, so callers needing native diagnostics should leave this off.
+    function maskLocalCandidateStat(stat) {
+      if (!stat || stat.type !== 'local-candidate') return stat;
+      const copy = {};
+      try {
+        // Future candidate-stat fields with an address/IP/port-like name must
+        // not accidentally reintroduce a local endpoint through enumeration.
+        for (const key in stat) {
+          if (!/(?:address|ip|port)/i.test(key)) copy[key] = stat[key];
         }
-        return orig.call(this, type, listener, opts);
+        for (const key of ['id', 'type', 'timestamp', 'transportId', 'candidateType', 'protocol',
+          'priority', 'url', 'relayProtocol', 'foundation', 'usernameFragment', 'tcpType']) {
+          if (!(key in copy) && key in stat) copy[key] = stat[key];
+        }
+      } catch (_) {}
+      for (const key of ['address', 'ip', 'ipAddress', 'relatedAddress']) {
+        if (key in stat) copy[key] = null;
+      }
+      for (const key of ['port', 'portNumber', 'relatedPort']) {
+        if (key in stat) copy[key] = 0;
+      }
+      return copy;
+    }
+    function maskStatsReport(report) {
+      if (!report || typeof report.forEach !== 'function') return report;
+      try {
+        const copy = new Map();
+        report.forEach((stat, id) => copy.set(id, maskLocalCandidateStat(stat)));
+        return copy;
+      } catch (_) { return report; }
+    }
+    patchMethod(peerPrototype, 'getStats', (orig) => function getStats() {
+      const result = orig.apply(this, arguments); // native receiver/errors first
+      if (!(active && cfg.webrtc) || !result || typeof result.then !== 'function') return result;
+      return result.then(report => active && cfg.webrtc ? maskStatsReport(report) : report);
+    });
+
+    // setLocalDescription() without an argument creates an internal offer or
+    // answer. Mask all standard local-description getters to cover that route.
+    for (const name of ['localDescription', 'currentLocalDescription', 'pendingLocalDescription']) {
+      const desc = Object.getOwnPropertyDescriptor(peerPrototype, name);
+      if (!desc || !desc.configurable || typeof desc.get !== 'function') continue;
+      patchGetter(peerPrototype, name, function () {
+        const value = desc.get.call(this); // preserve native receiver/errors
+        return active && cfg.webrtc ? maskDescription(value, true) : value;
       });
+    }
+
+    // Preserve the onicecandidate property's native handler identity without
+    // leaking a synthetic own __fpd* property on each peer connection.
+    const onIceHandlers = new WeakMap();
+    const onIceDesc = Object.getOwnPropertyDescriptor(peerPrototype, 'onicecandidate');
+    if (onIceDesc && onIceDesc.configurable && typeof onIceDesc.get === 'function' && typeof onIceDesc.set === 'function') {
+      try {
+        Object.defineProperty(peerPrototype, 'onicecandidate', {
+          ...onIceDesc,
+          get() {
+            const nativeHandler = onIceDesc.get.call(this); // brand check first
+            const record = onIceHandlers.get(this);
+            return record && nativeHandler === record.wrapper ? record.listener : nativeHandler;
+          },
+          set(listener) {
+            if (typeof listener !== 'function') {
+              onIceDesc.set.call(this, listener); // native validation before state change
+              onIceHandlers.delete(this);
+              return;
+            }
+            const wrapper = function (ev) {
+              if (filtersIceEvent(ev)) { report('webrtc'); return; }
+              return listener.call(this, ev);
+            };
+            onIceDesc.set.call(this, wrapper);
+            onIceHandlers.set(this, { listener, wrapper });
+          }
+        });
+        restore.push(() => { try { Object.defineProperty(peerPrototype, 'onicecandidate', onIceDesc); } catch (_) {} });
+      } catch (_) {}
+    }
+
+    // add/removeEventListener live on EventTarget.prototype, not normally on a
+    // peer connection. Scope wrappers to RTCPeerConnection instances, support
+    // EventListener objects, and retain one exact wrapper per listener so the
+    // native capture bookkeeping and removeEventListener both keep working.
+    const iceListeners = new WeakMap();
+    const isPeerConnection = target => {
+      try { return target instanceof window.RTCPeerConnection; } catch (_) { return false; }
+    };
+    // Do not read listener.handleEvent while registering: the native EventTarget
+    // owns that validation/coercion. The wrapper consults it only when invoked.
+    const isListener = listener => typeof listener === 'function' ||
+      !!listener && typeof listener === 'object';
+    function listenerWrapper(target, listener) {
+      let listeners = iceListeners.get(target);
+      if (!listeners) { listeners = new Map(); iceListeners.set(target, listeners); }
+      let wrapper = listeners.get(listener);
+      if (!wrapper) {
+        wrapper = function (ev) {
+          if (filtersIceEvent(ev)) { report('webrtc'); return; }
+          if (typeof listener === 'function') return listener.call(this, ev);
+          const handleEvent = listener.handleEvent;
+          return typeof handleEvent === 'function' ? handleEvent.call(listener, ev) : undefined;
+        };
+        listeners.set(listener, wrapper);
+      }
+      return wrapper;
+    }
+    function savedListenerWrapper(target, listener) {
+      return iceListeners.get(target)?.get(listener) || null;
+    }
+    if (window.EventTarget) {
+      patchMethod(EventTarget.prototype, 'addEventListener', (orig) =>
+        function addEventListener(type, listener, options) {
+          if (type === 'icecandidate' && isPeerConnection(this) && isListener(listener)) {
+            return orig.call(this, type, listenerWrapper(this, listener), options);
+          }
+          return orig.apply(this, arguments);
+        });
+      patchMethod(EventTarget.prototype, 'removeEventListener', (orig) =>
+        function removeEventListener(type, listener, options) {
+          if (type === 'icecandidate' && isPeerConnection(this) && isListener(listener)) {
+            const wrapper = savedListenerWrapper(this, listener);
+            if (wrapper) return orig.call(this, type, wrapper, options);
+          }
+          return orig.apply(this, arguments);
+        });
+    }
   }
 
   // ========================================= 9. PASSIVE ENUMERATION / STATE

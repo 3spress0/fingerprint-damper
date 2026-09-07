@@ -9,7 +9,7 @@ const { test } = require('node:test');
 const vm = require('node:vm');
 const injection = new vm.Script(readFileSync(join(__dirname, '../src/inject.js'), 'utf8'));
 
-function setup({ absent = false, mathStub = false, batteryManager = true } = {}) {
+function setup({ absent = false, mathStub = false, batteryManager = true, deviceMemory = true } = {}) {
   const context = vm.createContext({});
   vm.runInContext(`
     globalThis.window = globalThis;
@@ -30,6 +30,81 @@ function setup({ absent = false, mathStub = false, batteryManager = true } = {})
       dispatchEvent(event) {
         for (const fn of this.listeners.get(event.type) || []) fn.call(this, event);
         if (typeof this['on' + event.type] === 'function') this['on' + event.type](event);
+        return true;
+      }
+    }
+    class RTCSessionDescription {
+      constructor(init = {}) { this.type = init.type; this.sdp = init.sdp; }
+    }
+    class RTCPeerConnection extends EventTarget {
+      constructor() {
+        super();
+        this.offerSdp = ['v=0', 'a=candidate:1 1 udp 1 192.168.1.9 5000 typ host',
+          'a=candidate:2 1 udp 1 198.51.100.9 5001 typ srflx',
+          'a=candidate:3 1 udp 1 203.0.113.9 5002 typ prflx',
+          'a=candidate:4 1 udp 1 192.0.2.9 5003 typ relay'].join(String.fromCharCode(13, 10)) + String.fromCharCode(13, 10);
+        this.answerSdp = this.offerSdp;
+        this._localDescription = new RTCSessionDescription({ type: 'offer', sdp: this.offerSdp });
+        this._currentLocalDescription = this._localDescription;
+        this._pendingLocalDescription = this._localDescription;
+        this._onicecandidate = null;
+      }
+      get onicecandidate() {
+        if (!(this instanceof RTCPeerConnection)) throw new TypeError('invalid RTCPeerConnection receiver');
+        return this._onicecandidate;
+      }
+      set onicecandidate(listener) {
+        if (!(this instanceof RTCPeerConnection)) throw new TypeError('invalid RTCPeerConnection receiver');
+        this._onicecandidate = listener;
+      }
+      get localDescription() {
+        if (!(this instanceof RTCPeerConnection)) throw new TypeError('invalid RTCPeerConnection receiver');
+        return this._localDescription;
+      }
+      get currentLocalDescription() {
+        if (!(this instanceof RTCPeerConnection)) throw new TypeError('invalid RTCPeerConnection receiver');
+        return this._currentLocalDescription;
+      }
+      get pendingLocalDescription() {
+        if (!(this instanceof RTCPeerConnection)) throw new TypeError('invalid RTCPeerConnection receiver');
+        return this._pendingLocalDescription;
+      }
+      createOffer() {
+        if (!(this instanceof RTCPeerConnection)) throw new TypeError('invalid RTCPeerConnection receiver');
+        return Promise.resolve({ type: 'offer', sdp: this.offerSdp });
+      }
+      createAnswer() {
+        if (!(this instanceof RTCPeerConnection)) throw new TypeError('invalid RTCPeerConnection receiver');
+        return Promise.resolve({ type: 'answer', sdp: this.answerSdp });
+      }
+      setLocalDescription(desc) {
+        if (!(this instanceof RTCPeerConnection)) throw new TypeError('invalid RTCPeerConnection receiver');
+        this.lastSetArguments = arguments.length;
+        this.lastSetDescription = desc;
+        if (desc) {
+          this._localDescription = desc instanceof RTCSessionDescription ? desc : new RTCSessionDescription(desc);
+          this._currentLocalDescription = this._localDescription;
+          this._pendingLocalDescription = this._localDescription;
+        }
+        return Promise.resolve();
+      }
+      getStats() {
+        if (!(this instanceof RTCPeerConnection)) throw new TypeError('invalid RTCPeerConnection receiver');
+        return Promise.resolve(new Map([
+          ['host', { id: 'host', type: 'local-candidate', candidateType: 'host', address: '192.168.1.9', port: 5000,
+            ipAddress: '192.168.1.9', portNumber: 5000, relatedAddress: '10.0.0.4', relatedPort: 5001,
+            localAddress: '172.16.0.3', localPort: 5002 }],
+          ['relay', { id: 'relay', type: 'local-candidate', candidateType: 'relay', address: '192.0.2.9', port: 5002,
+            relatedAddress: '10.0.0.4', relatedPort: 5003 }],
+          ['remote', { id: 'remote', type: 'remote-candidate', address: '203.0.113.2', port: 6000 }]
+        ]));
+      }
+      emitCandidate(candidate) {
+        return this.dispatchEvent({ type: 'icecandidate', candidate: candidate == null ? null : { candidate } });
+      }
+      dispatchEvent(event) {
+        for (const fn of this.listeners.get(event.type) || []) fn.call(this, event);
+        if (typeof this._onicecandidate === 'function') this._onicecandidate.call(this, event);
         return true;
       }
     }
@@ -111,6 +186,10 @@ function setup({ absent = false, mathStub = false, batteryManager = true } = {})
         if (!(this instanceof Navigator)) throw new TypeError('invalid Navigator receiver');
         return 12;
       }
+      get deviceMemory() {
+        if (!(this instanceof Navigator)) throw new TypeError('invalid Navigator receiver');
+        return 16;
+      }
       getBattery() {
         if (!(this instanceof Navigator)) throw new TypeError('invalid Navigator receiver');
         this.batteryCalls++;
@@ -125,8 +204,8 @@ function setup({ absent = false, mathStub = false, batteryManager = true } = {})
       }
     }
     Notification.requests = 0;
-    Object.assign(globalThis, { CustomEvent, EventTarget, SpeechSynthesis, MediaDevices, BatteryManager,
-      PermissionStatus, Permissions, Navigator, Notification });
+    Object.assign(globalThis, { CustomEvent, EventTarget, RTCSessionDescription, RTCPeerConnection,
+      SpeechSynthesis, MediaDevices, BatteryManager, PermissionStatus, Permissions, Navigator, Notification });
     globalThis.document = new EventTarget();
     document.addEventListener('__fpd_stats', event => events.push(JSON.parse(event.detail)));
     globalThis.speechSynthesis = new SpeechSynthesis();
@@ -141,6 +220,18 @@ function setup({ absent = false, mathStub = false, batteryManager = true } = {})
       state: Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state'),
       notification: Object.getOwnPropertyDescriptor(Notification, 'permission'),
       request: Notification.requestPermission,
+      hardware: Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency'),
+      memory: Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory'),
+      rtc: {
+        setLocalDescription: RTCPeerConnection.prototype.setLocalDescription,
+        createOffer: RTCPeerConnection.prototype.createOffer,
+        createAnswer: RTCPeerConnection.prototype.createAnswer,
+        getStats: RTCPeerConnection.prototype.getStats,
+        onicecandidate: Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate'),
+        localDescription: Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'localDescription'),
+        addEventListener: EventTarget.prototype.addEventListener,
+        removeEventListener: EventTarget.prototype.removeEventListener
+      },
       math: Object.fromEntries(Object.getOwnPropertyNames(Math).map(name => [name, Math[name]]))
     };
     globalThis.floatFromBits = (hi, lo) => {
@@ -152,6 +243,7 @@ function setup({ absent = false, mathStub = false, batteryManager = true } = {})
   `, context);
   if (mathStub) vm.runInContext('Math.sin = function sin() { return globalThis.mathValue; };', context);
   if (!batteryManager) vm.runInContext('delete globalThis.BatteryManager;', context);
+  if (!deviceMemory) vm.runInContext("delete Navigator.prototype.deviceMemory;", context);
   if (absent) vm.runInContext(`
     delete globalThis.SpeechSynthesis; delete globalThis.speechSynthesis; delete globalThis.MediaDevices;
     delete globalThis.PermissionStatus; delete globalThis.Notification;
@@ -181,6 +273,21 @@ test('new passive and Math settings leave native results unchanged by default', 
     Notification.permission === 'granted' && Math.sin(1) === native.math.sin(1) &&
     Math.sin === native.math.sin && navigator.permissions.query === native.query)()`), true);
   assert.deepEqual(env.stats(), {});
+});
+
+test('hardware capacity masking keeps exposed CPU and memory values coherent without inventing a missing API', () => {
+  const env = setup();
+  assert.equal(env.evaluate('navigator.hardwareConcurrency === 8 && navigator.deviceMemory === 8'), true);
+  assert.throws(() => env.evaluate("Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get.call({})"), /invalid Navigator/);
+  assert.throws(() => env.evaluate("Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get.call({})"), /invalid Navigator/);
+
+  env.configure({ settings: { concurrency: false } });
+  assert.equal(env.evaluate('navigator.hardwareConcurrency === 12 && navigator.deviceMemory === 16'), true);
+  env.configure({ settings: { concurrency: true } });
+  assert.equal(env.evaluate('navigator.hardwareConcurrency === 8 && navigator.deviceMemory === 8'), true);
+
+  const noMemory = setup({ deviceMemory: false });
+  assert.equal(noMemory.evaluate("'deviceMemory' in Navigator.prototype && 'deviceMemory' in navigator"), false);
 });
 
 test('Battery masking keeps the native manager shell and restores exact native behavior when off', async () => {
@@ -226,6 +333,85 @@ test('Battery masking uses one stable safe fallback for an unusual partial API',
   })()`), true);
   env.configure({ settings: { battery: false } });
   assert.equal(await env.evaluate('(async () => await navigator.getBattery() === navigator.battery)()'), true);
+});
+
+test('WebRTC address filtering covers events, SDP creation and local-description reads while preserving listener removal', async () => {
+  const env = setup();
+  env.configure({ settings: { webrtc: true } });
+  assert.equal(await env.evaluate(`(async () => {
+    const pc = new RTCPeerConnection();
+    const calls = [];
+    const functionListener = event => calls.push('function:' + (event.candidate ? event.candidate.candidate : 'end'));
+    const objectListener = { handleEvent(event) { calls.push('object:' + (event.candidate ? event.candidate.candidate : 'end')); } };
+    const propertyListener = event => calls.push('property:' + (event.candidate ? event.candidate.candidate : 'end'));
+    pc.addEventListener('icecandidate', functionListener);
+    pc.addEventListener('icecandidate', objectListener);
+    pc.onicecandidate = propertyListener;
+    const identity = pc.onicecandidate === propertyListener && !Object.hasOwn(pc, '__fpdOnIce');
+    pc.emitCandidate('candidate:1 1 udp 1 192.168.1.9 5000 typ host');
+    pc.emitCandidate('candidate:2 1 udp 1 198.51.100.9 5001 typ srflx');
+    pc.emitCandidate('candidate:3 1 udp 1 203.0.113.9 5002 typ prflx');
+    pc.emitCandidate('candidate:4 1 udp 1 192.0.2.9 5003 typ relay');
+    pc.emitCandidate(null);
+    const filteredEvents = calls.length === 6 && calls.every(value => !/typ (host|srflx|prflx)/.test(value)) &&
+      calls.filter(value => value.includes('typ relay')).length === 3 && calls.filter(value => value.endsWith(':end')).length === 3;
+    pc.removeEventListener('icecandidate', functionListener);
+    pc.emitCandidate('candidate:4 1 udp 1 192.0.2.9 5003 typ relay');
+    const removalWorked = calls.filter(value => value.startsWith('function:')).length === 2 &&
+      calls.filter(value => value.startsWith('object:')).length === 3 && calls.filter(value => value.startsWith('property:')).length === 3;
+
+    const safe = description => !!description && !/typ (host|srflx|prflx)/.test(description.sdp) &&
+      /typ relay/.test(description.sdp);
+    const offer = await pc.createOffer();
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription({ type: 'offer', sdp: pc.offerSdp });
+    const setSafe = safe(pc.lastSetDescription) && pc.lastSetArguments === 1;
+    const implicit = new RTCPeerConnection();
+    await implicit.setLocalDescription();
+    const gettersSafe = ['localDescription', 'currentLocalDescription', 'pendingLocalDescription']
+      .every(name => implicit[name] instanceof RTCSessionDescription && safe(implicit[name])) && implicit.lastSetArguments === 0;
+    const stats = await pc.getStats();
+    const statsSafe = stats instanceof Map && stats.get('host').address === null && stats.get('host').port === 0 &&
+      stats.get('host').ipAddress === null && stats.get('host').portNumber === 0 &&
+      stats.get('host').relatedAddress === null && stats.get('host').relatedPort === 0 &&
+      !Object.hasOwn(stats.get('host'), 'localAddress') && !Object.hasOwn(stats.get('host'), 'localPort') &&
+      stats.get('relay').address === null && stats.get('relay').relatedAddress === null &&
+      stats.get('remote').address === '203.0.113.2';
+
+    const unrelated = new EventTarget();
+    let unrelatedCandidate = '';
+    unrelated.addEventListener('icecandidate', event => { unrelatedCandidate = event.candidate.candidate; });
+    unrelated.dispatchEvent({ type: 'icecandidate', candidate: { candidate: 'candidate:5 typ host' } });
+    return identity && filteredEvents && removalWorked && safe(offer) && safe(answer) && setSafe && gettersSafe && statsSafe &&
+      unrelatedCandidate.includes('typ host');
+  })()`), true);
+  assert.throws(() => env.evaluate('RTCPeerConnection.prototype.createOffer.call({})'), /invalid RTCPeerConnection/);
+  assert.throws(() => env.evaluate("Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'localDescription').get.call({})"), /invalid RTCPeerConnection/);
+  assert.equal(env.evaluate(`(() => {
+    let reads = 0;
+    try {
+      RTCPeerConnection.prototype.setLocalDescription.call({}, {
+        get sdp() { reads++; return 'a=candidate:1 typ host'; }
+      });
+    } catch (error) { return /invalid RTCPeerConnection/.test(error.message) && reads === 0; }
+    return false;
+  })()`), true);
+  assert.ok(env.stats().webrtc >= 1);
+
+  env.configure({ settings: { webrtc: false } });
+  assert.equal(await env.evaluate(`(async () => {
+    const pc = new RTCPeerConnection();
+    let leaked = '';
+    const listener = event => { leaked = event.candidate.candidate; };
+    pc.addEventListener('icecandidate', listener);
+    pc.emitCandidate('candidate:1 typ host');
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription({ type: 'offer', sdp: pc.offerSdp });
+    const stats = await pc.getStats();
+    return leaked.includes('typ host') && offer.sdp.includes('typ host') &&
+      pc.localDescription.sdp.includes('typ host') && pc.lastSetDescription.sdp.includes('typ host') &&
+      stats.get('host').address === '192.168.1.9' && stats.get('host').port === 5000;
+  })()`), true);
 });
 
 test('voice hiding returns a fresh empty list without replacing voices, speech or events', () => {
@@ -443,7 +629,7 @@ test('new activity counts contain counts only and respect the stats setting', as
 
 test('allowlisting restores all new methods, descriptors and native Math behavior', async () => {
   const env = setup();
-  env.configure({ settings: { speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true } });
+  env.configure({ settings: { speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true, webrtc: true } });
   env.evaluate('globalThis.savedSin = Math.sin;');
   env.configure({ allowlisted: true });
   assert.equal(await env.evaluate(`(async () =>
@@ -452,8 +638,18 @@ test('allowlisting restores all new methods, descriptors and native Math behavio
     Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get === native.batteryValues.level.get &&
     Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get === native.state.get &&
     Object.getOwnPropertyDescriptor(Notification, 'permission').get === native.notification.get &&
-    Notification.requestPermission === native.request && Math.sin === native.math.sin &&
-    savedSin(1) === native.math.sin(1) && (await navigator.mediaDevices.enumerateDevices()).length === 3
+    Notification.requestPermission === native.request &&
+    Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get === native.hardware.get &&
+    Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get === native.memory.get &&
+    RTCPeerConnection.prototype.setLocalDescription === native.rtc.setLocalDescription &&
+    RTCPeerConnection.prototype.createOffer === native.rtc.createOffer &&
+    RTCPeerConnection.prototype.createAnswer === native.rtc.createAnswer &&
+    RTCPeerConnection.prototype.getStats === native.rtc.getStats &&
+    Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get === native.rtc.onicecandidate.get &&
+    EventTarget.prototype.addEventListener === native.rtc.addEventListener &&
+    EventTarget.prototype.removeEventListener === native.rtc.removeEventListener &&
+    Math.sin === native.math.sin && savedSin(1) === native.math.sin(1) &&
+    (await navigator.mediaDevices.enumerateDevices()).length === 3
   )()`), true);
   env.configure({ allowlisted: false });
   assert.equal(env.evaluate('Math.sin === native.math.sin && savedSin(1) === native.math.sin(1)'), true,

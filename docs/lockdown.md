@@ -1,6 +1,6 @@
 # Global lockdown (introduced in v1.5)
 
-**Eight independent opt-ins, all off by default.** These are intentionally
+**Nine independent opt-ins, all off by default.** These are intentionally
 high-breakage browser network/CSP rules, not more spoofed API results. They apply
 globally to eligible HTTP(S) documents and HTTP(S)/WS(S) requests. The existing
 per-origin **API pause does not exempt a site** from these rules.
@@ -16,12 +16,13 @@ verify the actual browser behavior rather than trusting an empty page or badge.
 | Control | Browser policy | Cost and boundaries |
 |---|---|---|
 | Block site scripts | Appends `script-src 'none'; worker-src 'none'; object-src 'none'` on document responses; blocks network `script` loads. | Inline/external site code, applications and challenges fail. This is **no-script**, not transparent API emulation. Existing code isn't stopped retroactively. |
-| Opaque-origin sandbox | Adds bare CSP `sandbox` (no allow tokens), script/worker/object/frame denial, `form-action 'none'` and `base-uri 'none'`. | Restricts origin storage access, scripts, forms, popups and downloads. It is a document sandbox, **not an OS/process sandbox**. Does not by itself strip HTTP cookies or suppress all passive resource loads. |
+| Opaque-origin document sandbox | Adds bare CSP `sandbox` (no allow tokens), script/worker/object/frame denial, `form-action 'none'`, `base-uri 'none'`, legacy `child-src 'none'`, and explicit `frame-ancestors 'none'`; sets `X-Frame-Options: DENY` on covered documents. | Restricts origin storage access, scripts, forms, popups and downloads, and refuses embedding. It is a document sandbox, **not an OS/process sandbox**. Does not itself erase cookies, stop HTTP cookie headers, or suppress every passive resource load. |
 | Block new workers | Adds `worker-src 'none'` to covered documents. | Denies new dedicated/shared workers, including blob/module workers, and service-worker registration under that policy. Does not terminate/unregister existing workers or claim worklet coverage. |
 | Block embedded content loads | Adds `frame-src 'none'; object-src 'none'`; blocks network subframes/objects/object subrequests. | Embeds, payment widgets and iframe apps break. Creating an initial empty `about:blank` frame is not the same as loading a blocked frame URL. |
 | Block fetch/sockets/beacons | Adds `connect-src 'none'`; blocks XHR/fetch, new WebSocket, **Firefox beacon**, ping and CSP-report requests. | Breaks API calls/live updates and suppresses network CSP reports. Images, forms, navigation and existing connections are not comprehensively stopped by this control alone. |
 | Text-only / secondary-request seal | Adds `default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'`; blocks eligible non-`main_frame` network requests. | Only inline CSS is permitted by this added policy. Scripts, fonts, images, media, frames and external styling fail. The server's own CSS restrictions still apply. Initial documents/top-level navigation remain allowed: **not an air gap or firewall**. |
 | Strip network cookies | Removes request `Cookie` and response `Set-Cookie` headers on eligible requests. | Breaks sessions. Does not erase/hide existing `document.cookie`, other storage, URL tokens or authorization. Pair with no-script/sandbox for stronger restrictions; do not interpret this as a fresh browser profile. |
+| Disable HTTP cache identifiers | Removes request `If-None-Match`/`If-Modified-Since` and response `ETag`/`Last-Modified`; sets response `Cache-Control: no-store, max-age=0`. | Prevents future eligible HTTP cache writes and validator reuse, at a performance/offline cost. It does **not** clear pre-existing HTTP cache, BFCache or service-worker caches, and it leaves request safety preconditions such as `If-Match` alone. |
 | Minimize selected identity headers | Removes User-Agent, Accept-Language, Referer and the enumerated UA client hints; sets response Referrer-Policy to `no-referrer`. | Missing headers are detectable and may break bot checks/localization. Does not normalize TLS, HTTP/2, header order, request payloads or all JS-visible equivalents. Leaves Origin, authorization and security headers alone. |
 
 Stronger controls imply some weaker restrictions even if the weaker checkbox is
@@ -54,8 +55,10 @@ three managed dynamic DNR rules (IDs 15001–15003). The browser evaluates them;
 extension does not inspect request bodies or record their contents.
 
 CSP is **appended**, never replaced or relaxed. Multiple enforcing CSP policies
-intersect. No `allow-scripts`/`allow-same-origin` sandbox bypass is added, no CORS or
-certificate checks are weakened, and no new extension permissions are requested.
+intersect. The sandbox control explicitly adds `frame-ancestors 'none'` because
+`default-src` has no fallback for that directive, and adds `X-Frame-Options: DENY` as a
+response-header backstop. No `allow-scripts`/`allow-same-origin` sandbox bypass is added,
+no CORS or certificate checks are weakened, and no new extension permissions are requested.
 Only eligible HTTP(S) document responses receive CSP; this is not a DOM mutation
 observer or a late `<meta>` injection (CSP sandbox cannot be delivered through meta).
 
@@ -80,8 +83,10 @@ policy it received and need reloading. “Rules configured” confirms configura
   modification also needs host access, including initiator access where required.
 - Cached documents, BFCache, and synthetic/cached service-worker responses need
   special care; a response that doesn't traverse the applicable header-processing
-  path isn't guaranteed to receive the added CSP. Existing service workers and
-  background contexts are not removed. Test with fresh loads and inspect headers.
+  path isn't guaranteed to receive the added CSP or cache header changes. Cache
+  lockdown cannot clear existing entries or a service worker's cache. Existing
+  service workers and background contexts are not removed. Test with fresh loads
+  and inspect headers.
 - Enabling a switch doesn't close existing sockets, terminate scripts/workers,
   retract already exposed information, clear storage/cache or revoke permissions.
 - Top-level navigation, URLs, ordinary HTTP authorization, client certificates,
@@ -103,4 +108,5 @@ Relevant platform contracts:
 - [DNR permissions, matching and persistence](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/declarativeNetRequest)
 - [Header append/set/remove rules](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/declarativeNetRequest/ModifyHeaderInfo)
 - [CSP sandbox, opaque origin and allow tokens](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/sandbox)
+- [CSP frame-ancestors (no default-src fallback)](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/frame-ancestors)
 - [Firefox-specific resource types, including beacon](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/declarativeNetRequest/ResourceType)

@@ -135,8 +135,30 @@ function setup({ origin = 'https://one.example', day = '2026-09-05', offscreen =
     });
   }
   function glClass(version) {
-    return class {
-      getParameter(p) { return p === 0x1f02 ? version + ' native' : 'native:' + p; }
+    return class WebGLContext {
+      getParameter(p) {
+        if (!(this instanceof WebGLContext)) throw new TypeError('illegal WebGL receiver');
+        return p === 0x1f02 ? version + ' native' : 'native:' + p;
+      }
+      getExtension(name) {
+        if (!(this instanceof WebGLContext)) throw new TypeError('illegal WebGL receiver');
+        this.lastExtension = name;
+        return name === 'WEBGL_debug_renderer_info'
+          ? { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 }
+          : null;
+      }
+      getSupportedExtensions() {
+        if (!(this instanceof WebGLContext)) throw new TypeError('illegal WebGL receiver');
+        return ['WEBGL_debug_renderer_info', 'OES_texture_float'];
+      }
+      readPixels(x, y, width, height, format, type, pixels, dstOffset = 0) {
+        if (!(this instanceof WebGLContext)) throw new TypeError('illegal WebGL receiver');
+        if (this.readError) throw this.readError;
+        this.lastReadPixelsArgs = Array.from(arguments);
+        if (ArrayBuffer.isView(pixels)) {
+          for (let i = 0; i < width * height * 4; i++) pixels[dstOffset + i] = (x + y + i * 17) & 255;
+        }
+      }
     };
   }
   const sandbox = {
@@ -200,7 +222,10 @@ function setup({ origin = 'https://one.example', day = '2026-09-05', offscreen =
     elementBounds: Element.prototype.getBoundingClientRect,
     elementRects: Element.prototype.getClientRects,
     rangeBounds: Range.prototype.getBoundingClientRect,
-    rangeRects: Range.prototype.getClientRects
+    rangeRects: Range.prototype.getClientRects,
+    webglGetExtension: sandbox.WebGLRenderingContext.prototype.getExtension,
+    webglSupportedExtensions: sandbox.WebGLRenderingContext.prototype.getSupportedExtensions,
+    webglReadPixels: sandbox.WebGLRenderingContext.prototype.readPixels
   };
   script.runInContext(context);
   const configure = (message) => sandbox.document.dispatchEvent(new CustomEvent('__fpd_config', {
@@ -384,6 +409,49 @@ test('WebGL versions match the context class and disabling masking restores nati
   assert.equal(gl2.getParameter(0x1f02), 'WebGL 2.0 native');
 });
 
+test('WebGL hides debug renderer metadata and applies stable noise only to standard byte readback', () => {
+  const env = setup();
+  const gl = new env.WebGL2RenderingContext();
+  assert.equal(gl.getExtension('WEBGL_debug_renderer_info'), null);
+  assert.deepEqual(gl.getSupportedExtensions(), ['OES_texture_float']);
+
+  const first = new Uint8Array(32);
+  const second = new Uint8Array(32);
+  const expected = new Uint8Array(32);
+  for (let i = 0; i < expected.length; i++) expected[i] = (3 + i * 17) & 255;
+  gl.readPixels(1, 2, 4, 2, 0x1908, 0x1401, first);
+  gl.readPixels(1, 2, 4, 2, 0x1908, 0x1401, second);
+  assertNoise(first, expected);
+  assert.deepEqual(second, first, 'same readback should keep a stable persona');
+  assert.deepEqual(gl.lastReadPixelsArgs, [1, 2, 4, 2, 0x1908, 0x1401, second]);
+
+  const offset = new Uint8Array(40).fill(99);
+  gl.readPixels(1, 2, 4, 2, 0x1908, 0x1401, offset, 4);
+  assert.deepEqual(offset.slice(0, 4), new Uint8Array(4).fill(99));
+  assertNoise(offset.slice(4, 36), expected);
+
+  // A WebGL error can leave a too-small destination partially written. Do not
+  // perturb that partial native result: only full standard destinations are
+  // eligible for masking.
+  const undersized = new Uint8Array(31);
+  gl.readPixels(1, 2, 4, 2, 0x1908, 0x1401, undersized);
+  assert.deepEqual(undersized, expected.slice(0, 31), 'undersized byte output stays native');
+
+  const floating = new Float32Array(32);
+  gl.readPixels(1, 2, 4, 2, 0x1908, 0x1401, floating);
+  assert.deepEqual(Array.from(floating), Array.from(expected), 'non-byte outputs stay native');
+
+  env.configure({ settings: { webgl: false } });
+  const native = new Uint8Array(32);
+  gl.readPixels(1, 2, 4, 2, 0x1908, 0x1401, native);
+  assert.deepEqual(native, expected);
+  assert.deepEqual(gl.getSupportedExtensions(), ['WEBGL_debug_renderer_info', 'OES_texture_float']);
+  assert.equal(gl.getExtension('WEBGL_debug_renderer_info').UNMASKED_RENDERER_WEBGL, 0x9246);
+  assert.throws(() => env.WebGL2RenderingContext.prototype.getExtension.call({}, 'WEBGL_debug_renderer_info'), /illegal WebGL/);
+  gl.readError = new Error('native readback failure');
+  assert.throws(() => gl.readPixels(1, 2, 4, 2, 0x1908, 0x1401, native), error => error === gl.readError);
+});
+
 test('allowlisting restores the original canvas methods and geometry descriptors', async () => {
   const env = setup();
   const canvas = new env.OffscreenCanvas();
@@ -398,6 +466,9 @@ test('allowlisting restores the original canvas methods and geometry descriptors
   assert.equal(ctx.measureText('probe').width, METRICS.width);
   assert.deepEqual((await canvas.convertToBlob()).data, canvas.pixels);
   assert.equal(new env.WebGL2RenderingContext().getParameter(0x1f02), 'WebGL 2.0 native');
+  assert.equal(env.WebGLRenderingContext.prototype.getExtension, env.originals.webglGetExtension);
+  assert.equal(env.WebGLRenderingContext.prototype.getSupportedExtensions, env.originals.webglSupportedExtensions);
+  assert.equal(env.WebGLRenderingContext.prototype.readPixels, env.originals.webglReadPixels);
 });
 
 test('missing OffscreenCanvas support does not prevent the other patches from installing', () => {
