@@ -15,20 +15,20 @@ const api = typeof browser !== 'undefined' ? browser : chrome;
 const SAFE = [
   ['canvas', 'Canvas noise',
    'Adds small pixel and measureText() noise to main-thread canvases, including OffscreenCanvas. Changes exact hashes; does not hide installed fonts.'],
-  ['webgl', 'Mask GPU string',
-   'Reports the renderer as "Mozilla", matching Firefox\u2019s own resistFingerprinting crowd.'],
+  ['webgl', 'Dampen WebGL identity / readback',
+   'Masks vendor, renderer and version fields, hides WEBGL_debug_renderer_info, and stably changes standard RGBA/UNSIGNED_BYTE readPixels() output. Other WebGL capability and shader surfaces remain native.'],
   ['audio', 'Audio noise',
    'Perturbs ~32 samples by 1e-7. Inaudible; defeats AudioContext hashing.'],
   ['geometry', 'Normalise window geometry',
    'Zeroes window position, reports outer size as inner size, flattens colour depth. Screen resolution is left real so responsive layouts still work.'],
-  ['concurrency', 'Fix CPU core count',
-   'Always reports 8 cores.'],
+  ['concurrency', 'Normalise hardware capacity',
+   'Reports 8 CPU cores and, only where the browser already exposes it, 8 GB deviceMemory. It does not add APIs or patch worker navigators.'],
   ['battery', 'Neutralise Battery API',
-   'Always reports full and charging. Battery level is a strong short-term cross-site correlator.'],
+   'Reports full and charging while retaining the native BatteryManager shell where available. Battery level is a strong short-term cross-site correlator.'],
   ['pushGuard', 'Block push-ad funnels',
    'Silently dismisses notification permission requests and blocks known ad service workers.'],
-  ['netBlock', 'Block known push-ad networks',
-   'Network-level block for the RTMark/PropellerAds hosts. Converter sites keep working \u2014 only the ad layer is cut.'],
+  ['netBlock', 'Block known ad / push networks',
+   'Network-level block for 78 teardown and public-list ad/push domains. The expanded source-derived entries apply only to third-party requests; this is still narrower than a full ad blocker.'],
   ['stats', 'Count activity for the popup',
    'Slightly increases detectability, since it needs a page-visible event channel. Turn off for a quieter profile.']
 ];
@@ -48,11 +48,12 @@ const RISKY = [
    'Uses UTC for default date formatting and timezone offsets. Explicit time zones and other Date methods stay native. Can break calendars and bookings.'],
   ['language', 'Default to en-US language / locale',
    'Normalises navigator language, Intl defaults and built-in locale formatting. Supported explicit locale choices stay native. Sites may stop showing your language.'],
-  ['webrtc', 'Block WebRTC IP leaks',
-   'Strips your public IP from WebRTC ICE candidates. Breaks peer-to-peer calling apps with no TURN server \u2014 most big ones (Meet, Zoom, Discord) have one and are fine.']
+  ['webrtc', 'Block WebRTC address leaks',
+   'Withholds host, server-reflexive and peer-reflexive ICE candidates from events, SDP and local stats; relay (TURN) paths remain. Local getStats() becomes a map-shaped sanitized copy. Peer-to-peer apps without TURN can fail.']
 ];
 
 let settings = {};
+let pausedOrigins = [];
 let busy = false;
 
 function build(container, defs) {
@@ -79,20 +80,60 @@ function build(container, defs) {
   }
 }
 
+function renderPausedSites(origins) {
+  const container = document.getElementById('paused-sites');
+  const resumeAll = document.getElementById('resume-all');
+  container.textContent = '';
+  resumeAll.hidden = !origins.length;
+  if (!origins.length) {
+    const empty = document.createElement('div');
+    empty.className = 'd';
+    empty.textContent = 'No sites are paused.';
+    container.appendChild(empty);
+    return;
+  }
+  for (const origin of origins) {
+    const row = document.createElement('div');
+    row.className = 'paused-site';
+    const name = document.createElement('code');
+    name.textContent = origin;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Resume API patches';
+    button.addEventListener('click', () => resumePausedSite(origin));
+    row.append(name, button);
+    container.appendChild(row);
+  }
+}
+
 let toastTimer = null;
+function showSaved(message) {
+  const toast = document.getElementById('saved');
+  toast.textContent = message;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+}
 function setBusy(value) {
   busy = value;
   for (const control of document.querySelectorAll('input,button')) control.disabled = value;
 }
 async function load() {
-  const data = await api.runtime.sendMessage({ type: 'popupData' });
-  if (!data || !data.settings) throw new Error('Unable to read settings.');
+  const [data, paused] = await Promise.all([
+    api.runtime.sendMessage({ type: 'popupData' }),
+    api.runtime.sendMessage({ type: 'getAllowlist' })
+  ]);
+  if (!data || !data.settings || !paused || !paused.ok || !Array.isArray(paused.allowlist)) {
+    throw new Error('Unable to read settings.');
+  }
   settings = data.settings;
+  pausedOrigins = paused.allowlist;
   for (const [id, defs] of [['safe', SAFE], ['risky', RISKY], ['lockdown', FPDLockdown.controls]]) {
     const container = document.getElementById(id);
     container.textContent = '';
     build(container, defs);
   }
+  renderPausedSites(pausedOrigins);
   const status = data.policyStatus || {};
   const count = FPDLockdown.keys.filter(key => settings[key]).length;
   document.getElementById('policy-status').textContent = status.state === 'error'
@@ -115,13 +156,34 @@ async function save(patch) {
     saved = true;
     await load();
     if (result.warning) document.getElementById('save-error').textContent = result.warning;
-    toast.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+    showSaved('Saved — reload affected pages');
   } catch (error) {
     try { await load(); } catch (_) { /* Retain the explicit failure below. */ }
     document.getElementById('save-error').textContent = (saved ? 'Saved, but UI refresh failed: ' : 'Not saved: ') + error.message;
   } finally { setBusy(false); }
+}
+
+async function changePausedSites(type, origin) {
+  if (busy) return;
+  setBusy(true);
+  document.getElementById('save-error').textContent = '';
+  document.getElementById('saved').classList.remove('show');
+  let saved = false;
+  try {
+    const result = await api.runtime.sendMessage({ type, ...(origin ? { origin } : {}) });
+    if (!result || !result.ok) throw new Error(result && result.error || 'No save confirmation.');
+    saved = true;
+    await load();
+    if (result.warning) document.getElementById('save-error').textContent = result.warning;
+    showSaved('API patches resumed — reload affected tabs');
+  } catch (error) {
+    try { await load(); } catch (_) { /* Retain the explicit failure below. */ }
+    document.getElementById('save-error').textContent = (saved ? 'Saved, but UI refresh failed: ' : 'Not saved: ') + error.message;
+  } finally { setBusy(false); }
+}
+
+function resumePausedSite(origin) {
+  return changePausedSites('removeAllowlist', origin);
 }
 document.getElementById('lock-max').addEventListener('click', () => {
   if (busy || !window.confirm('Enable ALL global lockdown controls? Most sites may break or become blank. '
@@ -129,4 +191,9 @@ document.getElementById('lock-max').addEventListener('click', () => {
   return save(Object.fromEntries(FPDLockdown.keys.map(key => [key, true])));
 });
 document.getElementById('lock-off').addEventListener('click', () => save({ ...FPDLockdown.defaults }));
+document.getElementById('resume-all').addEventListener('click', () => {
+  if (busy || !pausedOrigins.length || !window.confirm('Resume API patches on every paused site? '
+    + 'Global ad-network and lockdown rules will stay unchanged. Reload affected tabs afterward.')) return;
+  return changePausedSites('clearAllowlist');
+});
 load().catch(error => { document.getElementById('save-error').textContent = error.message; });

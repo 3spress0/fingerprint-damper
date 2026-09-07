@@ -90,7 +90,7 @@ test('passive diagnostic values omit raw device IDs and voice names and never re
     document: { fonts: { size: 0, check: () => true } },
     speechSynthesis: { getVoices: () => [{ name: 'SECRET_VOICE_NAME' }], speak: forbidden },
     navigator: {
-      language: 'nl-NL', hardwareConcurrency: 12,
+      language: 'nl-NL', hardwareConcurrency: 12, deviceMemory: 16,
       mediaDevices: { enumerateDevices: async () => [{ kind: 'audioinput', label: 'SECRET_LABEL',
         deviceId: 'SECRET_DEVICE_ID', groupId: 'SECRET_GROUP_ID' }], getUserMedia: forbidden },
       permissions: { query: async ({ name }) => {
@@ -103,6 +103,7 @@ test('passive diagnostic values omit raw device IDs and voice names and never re
   vm.runInContext(valuesSource, context);
   const data = await vm.runInContext('__fpdProbeValues()', context);
   assert.equal(data.realm, 'window');
+  assert.equal(data.memory, 16);
   assert.equal(data.voices, 1);
   assert.equal(data.devices.count, 1);
   assert.equal(data.devices.withDeviceId, 1);

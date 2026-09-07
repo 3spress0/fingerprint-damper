@@ -29,6 +29,11 @@ test('HTTP fixture provides uncached server-CSP controls and logs no raw identif
   const prime = await fetch(base + '/prime-cookie');
   assert.match(prime.headers.get('set-cookie'), /^__fpd_lockdown_probe=1;/);
   await prime.text();
+  const cache = await fetch(base + '/cache-probe');
+  assert.equal(cache.headers.get('cache-control'), 'private, max-age=600');
+  assert.equal(cache.headers.get('etag'), '"fpd-cache-probe-v1"');
+  assert.equal(cache.headers.get('last-modified'), 'Tue, 01 Sep 2026 00:00:00 GMT');
+  await cache.text();
   const data = await (await fetch(base + '/events')).text();
   assert.doesNotMatch(data, /SECRET_|Authorization|Bearer/);
   const first = JSON.parse(data)[0];
@@ -36,6 +41,8 @@ test('HTTP fixture provides uncached server-CSP controls and logs no raw identif
   assert.equal(first.probeCookie, true);
   assert.equal(first.userAgentPresent, true);
   assert.equal(first.refererPresent, true);
+  assert.equal(typeof first.etagValidatorPresent, 'boolean');
+  assert.equal(typeof first.modifiedValidatorPresent, 'boolean');
   for (const path of ['/probe.js', '/worker.js', '/module.mjs', '/shared.js']) {
     const asset = await fetch(base + path);
     assert.equal(asset.headers.get('content-type'), 'text/javascript');

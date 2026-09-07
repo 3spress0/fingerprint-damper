@@ -27,10 +27,28 @@
     speak: window.SpeechSynthesis && SpeechSynthesis.prototype.speak,
     devices: window.MediaDevices && MediaDevices.prototype.enumerateDevices,
     capture: navigator.mediaDevices && navigator.mediaDevices.getUserMedia,
+    battery: navigator.getBattery,
+    batteryValues: window.BatteryManager && Object.fromEntries(['charging', 'chargingTime', 'dischargingTime', 'level']
+      .map(name => [name, Object.getOwnPropertyDescriptor(BatteryManager.prototype, name)])),
     query: navigator.permissions && navigator.permissions.query,
     state: window.PermissionStatus && Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state'),
     notification: window.Notification && Object.getOwnPropertyDescriptor(Notification, 'permission'),
     request: window.Notification && Notification.requestPermission,
+    hardware: window.Navigator && Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency'),
+    deviceMemory: window.Navigator && Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory'),
+    deviceMemoryPresent: 'deviceMemory' in navigator,
+    webgl: window.WebGLRenderingContext && {
+      getExtension: WebGLRenderingContext.prototype.getExtension,
+      getSupportedExtensions: WebGLRenderingContext.prototype.getSupportedExtensions,
+      readPixels: WebGLRenderingContext.prototype.readPixels
+    },
+    webrtc: window.RTCPeerConnection && {
+      setLocalDescription: RTCPeerConnection.prototype.setLocalDescription,
+      createOffer: RTCPeerConnection.prototype.createOffer,
+      createAnswer: RTCPeerConnection.prototype.createAnswer,
+      getStats: RTCPeerConnection.prototype.getStats,
+      onicecandidate: Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate')
+    },
     math: Object.fromEntries(Object.getOwnPropertyNames(Math).map(name => [name, Math[name]])),
     worker: window.Worker, sharedWorker: window.SharedWorker
   };
@@ -110,6 +128,75 @@
       const rect = caret.getBoundingClientRect();
       assert((raw.width === 0) === (rect.width === 0), 'collapsed width became nonzero');
       assert((raw.height === 0) === (rect.height === 0), 'collapsed height became nonzero');
+    });
+
+    await check('WebGL debug metadata is withheld without changing unrelated extensions', () => {
+      if (!native.webgl || !native.webgl.getExtension || !native.webgl.getSupportedExtensions || !window.WebGLRenderingContext) {
+        skip('WebGL debug APIs are unavailable.');
+      }
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl');
+      if (!gl) skip('A WebGL context is unavailable.');
+      const advertised = native.webgl.getSupportedExtensions.call(gl) || [];
+      if (!advertised.includes('WEBGL_debug_renderer_info')) skip('Debug renderer extension is unavailable.');
+      assert(gl.getExtension('WEBGL_debug_renderer_info') === null, 'debug extension remains visible');
+      assert(!(gl.getSupportedExtensions() || []).includes('WEBGL_debug_renderer_info'), 'debug extension remains advertised');
+      assert((gl.getSupportedExtensions() || []).every(name => advertised.includes(name)), 'an unrelated extension was invented');
+    });
+
+    await check('WebGL standard byte readback is stable, bounded and can be disabled', () => {
+      if (!native.webgl || !native.webgl.readPixels || !window.WebGLRenderingContext) {
+        skip('WebGL readPixels is unavailable.');
+      }
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl');
+      if (!gl) skip('A WebGL context is unavailable.');
+      gl.clearColor(0.25, 0.5, 0.75, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      const raw = new Uint8Array(4 * 4 * 4);
+      const first = new Uint8Array(raw.length);
+      const second = new Uint8Array(raw.length);
+      native.webgl.readPixels.call(gl, 0, 0, 4, 4, gl.RGBA, gl.UNSIGNED_BYTE, raw);
+      gl.readPixels(0, 0, 4, 4, gl.RGBA, gl.UNSIGNED_BYTE, first);
+      gl.readPixels(0, 0, 4, 4, gl.RGBA, gl.UNSIGNED_BYTE, second);
+      assert(first.some((value, index) => index % 4 !== 3 && value !== raw[index]), 'no colour byte changed');
+      for (let index = 3; index < raw.length; index += 4) assert(first[index] === raw[index], 'alpha changed');
+      equal(Array.from(first), Array.from(second), 'readback noise drifted');
+      settings({ webgl: false });
+      const restored = new Uint8Array(raw.length);
+      gl.readPixels(0, 0, 4, 4, gl.RGBA, gl.UNSIGNED_BYTE, restored);
+      equal(Array.from(restored), Array.from(raw), 'native WebGL readback was not restored');
+      settings({ webgl: true });
+    });
+
+    await check('Hardware capacity normalisation only masks APIs the browser already exposes', () => {
+      if (!native.hardware || !native.hardware.get) skip('hardwareConcurrency is unavailable or unpatchable.');
+      assert(navigator.hardwareConcurrency === 8, 'CPU count was not normalised');
+      if (native.deviceMemory && native.deviceMemory.get) {
+        assert(navigator.deviceMemory === 8, 'deviceMemory was not normalised');
+      } else {
+        assert(('deviceMemory' in navigator) === native.deviceMemoryPresent, 'deviceMemory was invented');
+      }
+    });
+
+    await check('Battery masking keeps a native manager shell and can be disabled', async () => {
+      if (!native.battery || !window.BatteryManager || !native.batteryValues ||
+          !Object.values(native.batteryValues).every(value => value && value.get)) {
+        skip('A patchable Battery API is unavailable.');
+      }
+      let raw;
+      try { raw = await native.battery.call(navigator); }
+      catch (e) { skip('Native Battery API is rejected: ' + e.name); }
+      const first = await navigator.getBattery();
+      const second = await navigator.getBattery();
+      assert(first === raw && first === second && first instanceof BatteryManager, 'native battery manager identity/type changed');
+      assert(first.charging === true && first.chargingTime === 0 && first.dischargingTime === Infinity && first.level === 1,
+        'battery values were not masked');
+      settings({ battery: false });
+      const restored = await navigator.getBattery();
+      assert(restored === raw && restored.charging === native.batteryValues.charging.get.call(raw) &&
+        restored.level === native.batteryValues.level.get.call(raw), 'native battery result was not restored');
+      settings({ battery: true });
     });
 
     settings({ language: true, timezone: true });
@@ -220,9 +307,33 @@
       assert(Number.prototype.toLocaleString === native.number && Date.prototype.toLocaleString === native.date, 'built-in formatting methods not restored');
       if (native.voices) assert(SpeechSynthesis.prototype.getVoices === native.voices, 'voice method not restored');
       if (native.devices) assert(MediaDevices.prototype.enumerateDevices === native.devices, 'device method not restored');
+      if (native.battery) assert(navigator.getBattery === native.battery, 'battery method not restored');
+      if (native.batteryValues?.level) assert(Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get === native.batteryValues.level.get,
+        'battery getter not restored');
       if (native.state) assert(Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get === native.state.get, 'permission getter not restored');
       if (native.notification) assert(Object.getOwnPropertyDescriptor(Notification, 'permission').get === native.notification.get, 'notification getter not restored');
       if (native.request) assert(Notification.requestPermission === native.request, 'request method not restored');
+      if (native.hardware?.get) assert(Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get === native.hardware.get,
+        'hardwareConcurrency getter not restored');
+      if (native.deviceMemory?.get) assert(Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get === native.deviceMemory.get,
+        'deviceMemory getter not restored');
+      if (native.webgl) {
+        assert(WebGLRenderingContext.prototype.getExtension === native.webgl.getExtension, 'WebGL getExtension not restored');
+        assert(WebGLRenderingContext.prototype.getSupportedExtensions === native.webgl.getSupportedExtensions,
+          'WebGL extension list method not restored');
+        assert(WebGLRenderingContext.prototype.readPixels === native.webgl.readPixels, 'WebGL readPixels not restored');
+      }
+      if (native.webrtc) {
+        assert(RTCPeerConnection.prototype.setLocalDescription === native.webrtc.setLocalDescription,
+          'WebRTC setLocalDescription not restored');
+        assert(RTCPeerConnection.prototype.createOffer === native.webrtc.createOffer &&
+          RTCPeerConnection.prototype.createAnswer === native.webrtc.createAnswer &&
+          RTCPeerConnection.prototype.getStats === native.webrtc.getStats, 'WebRTC methods not restored');
+        if (native.webrtc.onicecandidate) {
+          assert(Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get === native.webrtc.onicecandidate.get,
+            'WebRTC event handler descriptor not restored');
+        }
+      }
       assert(Math.sin === native.math.sin && Math.pow === native.math.pow, 'Math methods not restored');
     });
     const failed = results.filter(r => r.passed === false).length;

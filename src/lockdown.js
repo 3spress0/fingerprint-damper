@@ -10,8 +10,8 @@
   const controls = [
     ['lockScripts', 'Block site scripts',
       'Blocks inline/external site JavaScript and new workers via CSP, plus network script loads. Apps, logins and challenges may stop working. Reload required.'],
-    ['lockSandbox', 'Force an opaque-origin sandbox',
-      'No allow-scripts or allow-same-origin escape: also restricts forms, popups, downloads, embeds and origin storage access. Many pages become unusable. Not an OS sandbox; does not erase cookies or stop HTTP from sending them.'],
+    ['lockSandbox', 'Force an opaque-origin document sandbox',
+      'Adds a CSP sandbox with no allow-* escape tokens, blocks scripts/workers/embeds, and denies ancestor framing with CSP plus X-Frame-Options. It also restricts forms, popups, downloads and origin storage access. Many pages become unusable. Not an OS sandbox; it does not erase cookies or stop HTTP from sending them.'],
     ['lockWorkers', 'Block new workers',
       'CSP worker-src none denies new dedicated/shared workers and service-worker registrations on covered documents. Does not terminate existing workers or unregister service workers; worklets are not covered by this switch.'],
     ['lockEmbeds', 'Block embedded content loads',
@@ -22,6 +22,8 @@
       'Blocks eligible non-navigation HTTP(S)/WS(S) requests, plus CSP default-src none. Only inline styles remain permitted by this added policy. Scripts, media, fonts, frames and most styling fail. The initial document and top-level navigations still go out.'],
     ['lockCookies', 'Strip network cookies',
       'Removes outgoing Cookie and incoming Set-Cookie headers on eligible requests. Sessions/logins break. Existing cookies, DOM storage, cached data and authorization are NOT deleted or isolated by this switch.'],
+    ['lockCache', 'Disable HTTP cache identifiers',
+      'Prevents new HTTP cache writes and strips ETag/Last-Modified validators on eligible traffic. Offline use and performance can suffer. Existing HTTP cache entries and service-worker caches are NOT cleared or reliably bypassed.'],
     ['lockHeaders', 'Remove selected identity headers',
       'Removes User-Agent, Accept-Language, Referer and known UA client-hint headers. Can break localization and bot checks; missing headers are fingerprintable. Does not hide IP/TLS or change header order, Origin, authorization or security headers.']
   ].map(row => Object.freeze(row));
@@ -43,7 +45,13 @@
       blocked.add('script');
     }
     if (on('lockSandbox')) {
-      policy.add('sandbox').add("form-action 'none'").add("base-uri 'none'");
+      // `default-src` does not cover frame-ancestors. Keep it explicit and add
+      // X-Frame-Options below as a response-header backstop for older embedders.
+      // child-src is redundant in modern browsers with explicit worker/frame
+      // directives, but closes their legacy fallback path without granting an
+      // allow-token escape from the CSP sandbox.
+      policy.add('sandbox').add("form-action 'none'").add("base-uri 'none'")
+        .add("frame-ancestors 'none'").add("child-src 'none'");
     }
     if (on('lockWorkers')) policy.add("worker-src 'none'");
     if (on('lockEmbeds') || on('lockSandbox')) {
@@ -59,14 +67,22 @@
       policy.add("default-src 'none'").add("style-src 'unsafe-inline'")
         .add("form-action 'none'").add("base-uri 'none'");
     }
-    if (policy.size) rules.push({
-      id: ids.csp, priority: 1,
-      action: { type: 'modifyHeaders', responseHeaders: [
+    if (policy.size) {
+      const responseHeaders = [
         // APPEND, never SET: every server CSP remains enforced, in intersection.
         { header: 'content-security-policy', operation: 'append', value: [...policy].join('; ') }
-      ] },
-      condition: { regexFilter: http, resourceTypes: ['main_frame', 'sub_frame'] }
-    });
+      ];
+      // Redundant with frame-ancestors in current Firefox, but enforced at the
+      // browser response layer and useful for older embedding implementations.
+      if (on('lockSandbox')) {
+        responseHeaders.push({ header: 'x-frame-options', operation: 'set', value: 'DENY' });
+      }
+      rules.push({
+        id: ids.csp, priority: 1,
+        action: { type: 'modifyHeaders', responseHeaders },
+        condition: { regexFilter: http, resourceTypes: ['main_frame', 'sub_frame'] }
+      });
+    }
     if (on('lockResources') || blocked.size) rules.push({
       id: ids.block, priority: 100,
       action: { type: 'block' },
@@ -78,6 +94,20 @@
     if (on('lockCookies')) {
       requestHeaders.push({ header: 'cookie', operation: 'remove' });
       responseHeaders.push({ header: 'set-cookie', operation: 'remove' });
+    }
+    if (on('lockCache')) {
+      // Validators can be repurposed as a stable per-browser identifier. This
+      // only governs eligible network traffic after the rule is installed; it
+      // cannot erase old cache entries or control a service worker's cache.
+      requestHeaders.push(
+        { header: 'if-none-match', operation: 'remove' },
+        { header: 'if-modified-since', operation: 'remove' }
+      );
+      responseHeaders.push(
+        { header: 'etag', operation: 'remove' },
+        { header: 'last-modified', operation: 'remove' },
+        { header: 'cache-control', operation: 'set', value: 'no-store, max-age=0' }
+      );
     }
     if (on('lockHeaders')) {
       for (const header of ['user-agent', 'accept-language', 'referer', 'sec-ch-ua',

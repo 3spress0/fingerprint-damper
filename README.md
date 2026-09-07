@@ -29,9 +29,8 @@ deobfuscated PropellerAds SDK was found reading GPU model, battery level, screen
 timezone and window position through ordinary DOM calls — none of which an ad blocker can prevent
 once the script has loaded. This extension targets exactly those surfaces.
 
-**Status:** `web-ext lint` → 0 errors, 0 warnings, 0 notices. Packaged zip lives in `package/`
-(filename tracks `manifest.json`'s version — check there rather than here, this line has gone
-stale before).
+**v1.1.0 status:** `web-ext lint` → 0 errors, 0 warnings, 0 notices. Packaged zip lives in
+`package/` (filename tracks `manifest.json`'s version).
 
 ---
 
@@ -50,9 +49,10 @@ The three are complementary:
 | Network | Privacy Badger | Heuristically learns third parties that track across sites |
 | **API** | **this** | **Changes what a script that got through is able to read** |
 
-There is a small deliberate overlap: a `declarativeNetRequest` ruleset blocking the specific
-PropellerAds/RTMark hosts found in the teardown, since fresh operator domains often aren't on
-filter lists yet.
+There is a small deliberate overlap: a `declarativeNetRequest` ruleset blocks the specific
+PropellerAds/RTMark hosts found in the teardown plus a reviewed snapshot of public ad-network
+lists. It is deliberately much narrower than a general-purpose ad blocker and keeps the
+source-derived entries third-party-only to limit breakage.
 
 ---
 
@@ -73,9 +73,10 @@ site A, next session   18a9f38d   <- rotates, long-term linking broken
 real canvas            ada5b8c5
 ```
 
-**2. Blend into the biggest crowd.** The GPU string is reported as `Mozilla` — exactly what
-Firefox's own `resistFingerprinting` reports. Inventing a unique fake GPU would make you a
-population of one.
+**2. Blend into the biggest crowd.** WebGL vendor/renderer/version fields are reported as
+`Mozilla` / the matching WebGL version, and its debug-renderer extension is withheld — following
+the broad persona Firefox's own `resistFingerprinting` uses. Inventing a unique fake GPU would
+make you a population of one.
 
 **3. Some things are deliberately left alone.** `navigator.plugins` and `maxTouchPoints` are
 untouched. The SDK we analysed used `plugins.length === 0` as a *headless-bot* signal — emptying it
@@ -95,13 +96,13 @@ Even the default protections can affect some sites; the per-site pause is the es
 | Protection | Behaviour |
 |---|---|
 | Canvas / text metric noise | Up to 32 RGB low-bit flips on pixel readback/serialization (max channel delta 1/255), including main-thread `OffscreenCanvas`. The noise step is O(32); serialization needs a copy and skips canvases over 4 MP. `measureText()` fields get stable <0.01px jitter. This changes exact hashes, not reliable font-availability tests. |
-| GPU masking | `UNMASKED_RENDERER_WEBGL` / `UNMASKED_VENDOR_WEBGL` → `Mozilla`. This was the single highest-entropy item the SDK collected. |
+| WebGL identity / readback | Vendor, renderer and matching version strings → `Mozilla` / `WebGL 1.0` or `2.0`; `WEBGL_debug_renderer_info` is hidden. Standard RGBA/UNSIGNED_BYTE `readPixels()` receives stable, low-bit RGB noise. Other WebGL capabilities, shader behavior, non-byte formats and PBO readback remain native. |
 | Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. Inaudible. A `WeakSet` prevents repeated reads from accumulating drift. |
 | Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. |
-| CPU cores | `hardwareConcurrency` → 8. |
-| Battery | `getBattery()` → always full and charging. Level plus discharge time is a startlingly good short-term cross-site correlator. |
+| Hardware capacity | `hardwareConcurrency` → 8 and, only if the browser already exposes it, `deviceMemory` → 8. No API is invented; worker navigators remain native. |
+| Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell when its getters are patchable; native failures remain failures. Level plus discharge time is a startlingly good short-term cross-site correlator. |
 | Push guard | `Notification.requestPermission()` resolves `"default"` with **no dialog**; service workers matching known ad patterns are refused. |
-| Network block | DNR rules for `9hito.com`, `zdzhk.com`, `kbvcd.com`, `rtmark.net`, `dulotadtor.com`, `abunownon.com`, `dawac.com`, `10zon.com`, `kocmg.com`, `blxwnnw.com` (from the original teardown), plus `lzrikate.com`, `pheegoab.click`, `phenver.com`, `pushno.com`, sourced from [LanikSJ/ubo-filters' PropellerAds Domains Filter List](https://github.com/LanikSJ/ubo-filters) (MIT). |
+| Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). The 64 newly added source-derived domains apply only to third-party requests. See [source notice and pinned snapshot](rules/NOTICE.md). |
 
 Note `requestPermission` returns `"default"`, not `"denied"`. "Denied" is a sticky, distinguishable
 state; "default" reads as *the user dismissed it*, which is both commonplace and unremarkable.
@@ -121,7 +122,7 @@ feature keeps working. That's the "doesn't hurt UX" line.
 | ClientRects damping | Stable sub-pixel changes to `Element` and `Range` `getBoundingClientRect()` / `getClientRects()`. Native `DOMRect`/`DOMRectList` objects, zero dimensions, and bounding/fragment relationships are preserved (within floating-point precision). No DOM layout is changed, but callers using these measurements for positioning, selection or hit-testing may break. |
 | Default to `en-US` language / locale | Sets navigator language and normalises default locale selection in available `Intl` formatters, numeric/date `toLocale*` methods, string collation and locale-sensitive casing. Supported explicit locale choices and Unicode extensions remain native; empty/unsupported requests fall back to `en-US`. Sites may stop showing your language. |
 | Default to UTC timezone | Uses UTC for default `Intl.DateTimeFormat` and date `toLocale*` formatting, plus zero timezone offsets. Output and `resolvedOptions()` agree. Explicit time zones remain native. Can break calendars, bookings and delivery estimates; other local-time `Date` APIs are not masked. |
-| WebRTC IP filtering | Filters host/STUN ICE candidates. May break peer-to-peer applications without a TURN fallback. |
+| WebRTC address filtering | Withholds host, server-reflexive and peer-reflexive ICE candidates from events, SDP creation/local-description reads and local candidate stats; relay (TURN) paths stay available. While enabled, `getStats()` resolves to a map-shaped sanitized copy. May break peer-to-peer applications without TURN and changes diagnostics. |
 
 Locale/timezone settings affect **new formatters** and subsequent `toLocale*` calls. Already-created
 formatter objects and already-returned measurement snapshots keep their values; reload after a
@@ -135,15 +136,16 @@ selected HTTP headers can now be removed with the separate lockdown tier.
 
 ## Global lockdown — experimental, extreme breakage
 
-All **eight controls are off by default**, separate from the existing API options:
+All **nine controls are off by default**, separate from the existing API options:
 
 - Block site JavaScript (inline and external) instead of trying to emulate every API.
-- Force a browser **opaque-origin document sandbox**, without script/same-origin escape tokens.
+- Force a browser **opaque-origin document sandbox**, with no script/same-origin escape tokens and explicit anti-framing policy.
 - Block new workers and service-worker registrations on covered documents.
 - Block embedded frame/object loads.
 - Block fetch/XHR, new WebSockets, beacons, pings and CSP reports.
 - Text-only loading: block eligible secondary requests, scripts, media/fonts and external styling.
 - Strip outgoing/incoming network cookies, without clearing existing browser data.
+- Disable new HTTP cache writes and remove ETag/Last-Modified validators; it does not clear old or service-worker caches.
 - Remove selected identity headers (UA, language, referrer, known UA client hints).
 
 These are **global kill switches**, including on API-paused sites. Settings has a confirmed
@@ -176,6 +178,12 @@ Release Firefox enforces signing with no override; for that you'd need to submit
 Requires **Firefox 142+** (`world: "MAIN"` content scripts landed in 128;
 `data_collection_permissions` in 140; Android parity in 142).
 
+### Build a local zip
+
+From the repository root, run `npx web-ext build` (or an installed `web-ext build`).
+`web-ext-config.cjs` writes the versioned archive to ignored `package/` and excludes the Node/browser
+test artifacts from the installable zip.
+
 ---
 
 ## Verify it works
@@ -193,9 +201,10 @@ The new rule/settings/UI tests use mocked extension APIs, not native DNR enforce
 `test/browser-regression.html` exercises the patches against real browser APIs with native
 references captured first; open it with the installed extension **disabled**. See
 [test/README.md](test/README.md) for locale-matrix commands, font-probe interpretation and the
-remaining manual checks. The self-test includes Element/Range hashes, actual locale output,
-voice/device counts, passive permission states, Math hashes, and window/worker comparisons.
-Local-font and worker probes are explicitly labelled **unprotected**. Worker loading may require
+remaining manual checks. The self-test includes WebGL byte readback, Element/Range hashes, actual
+locale output, hardware capacity, voice/device counts, passive permission states, Math hashes, and
+window/worker comparisons. Local-font and worker probes are explicitly labelled **unprotected**.
+Worker loading may require
 a local HTTP server; a failure or matching value is not proof of protection. The notification
 request test now requires an explicit button click rather than running automatically.
 
@@ -208,11 +217,15 @@ A file-based or JS-driven self-test cannot prove that scripts were blocked befor
 
 Toolbar badge shows how many fingerprint reads were intercepted on the current page. Click for a
 breakdown and a **Pause API patches on this site** button (per-origin, persists, reloads the tab).
-The badge counts page API reports, not DNR/network blocks.
+The badge counts page API reports, not DNR/network blocks. Settings also has a **Paused sites** list:
+resume one origin, or confirm **Resume API patches on all sites**, without needing to revisit a broken
+page. Reload tabs after resuming so their page-world hooks are installed again.
 
-API pause never disables the global ad-network switch or global lockdown. If lockdown breaks a
-site, turn off the relevant global switch or use **Turn off all lockdown**, then reload. If removal
-fails, disable the extension in `about:addons`; the UI reports failures rather than claiming success.
+API pause never disables the global ad-network switch or global lockdown. The Paused sites controls
+only change that per-origin API list; they do not make global network/CSP rules permissive. If
+lockdown breaks a site, turn off the relevant global switch or use **Turn off all lockdown**, then
+reload. If removal fails, disable the extension in `about:addons`; the UI reports failures rather
+than claiming success.
 
 ---
 
@@ -257,9 +270,26 @@ fails, disable the extension in `about:addons`; the UI reports failures rather t
   objects, native change-event timing, real capture/track APIs and explicit permission outcomes
   remain available. Permission support/errors remain observable. The Push guard controls
   notification requests independently from passive permission-state masking.
+- **Battery masking is value masking, not battery isolation.** Where the browser exposes patchable
+  `BatteryManager` getters, the native manager identity/events remain so compatibility is preserved;
+  event timing and saved native getters can still reveal changes. Native rejections stay rejections.
+  With the battery switch off, `getBattery()` returns its native result instead of an extension-made
+  error.
+- **WebGL and capacity masking are partial.** The standard byte-array `readPixels()` path is damped,
+  but shader precision, limits, extensions other than debug-renderer info, non-byte/PBO readback and
+  worker/OffscreenCanvas WebGL remain native. `deviceMemory` is masked only when it already exists;
+  no worker navigator is altered.
+- **WebRTC filtering is page-world compatibility masking, not transport isolation.** It cannot
+  retract an address exposed before injection or through a saved native reference, block browser
+  transport itself, or make latency/network characteristics anonymous. The opt-in sanitizes local
+  candidate fields in returned stats but changes `getStats()` report identity; remote candidates and
+  the broader WebRTC API remain native.
 - **Math rounding is experimental, not engine standardisation.** Exact identities and numerical
   algorithms can change. Arithmetic operators, WebAssembly, unpatched globals and rounding-boundary
   differences remain available to probes. It is deliberately off by default.
+- **Cache lockdown is not storage cleanup or a service-worker bypass.** It removes validators and
+  sets `Cache-Control: no-store` only on eligible responses after the rule is active. Existing HTTP
+  cache entries, BFCache, service-worker caches and URL identifiers remain outside its control.
 - **TLS/HTTP-stack fingerprinting remains outside scope.** Optional removal of selected HTTP
   headers is not transport normalization. Page-world hooks cannot control the TLS
   ClientHello or HTTP/2 stack/header order. An ordinary pass-through VPN/SOCKS/CONNECT proxy does not
@@ -272,13 +302,15 @@ fails, disable the extension in `about:addons`; the UI reports failures rather t
 
 ```
 manifest.json                 MV3, Firefox event page (not a service worker)
+web-ext-config.cjs            package destination + excludes Node/browser test artifacts
 rules/adnets.json             declarativeNetRequest blocklist
+rules/NOTICE.md               public source provenance and license notice
 src/inject.js                 MAIN world, document_start — all API patches
 src/bridge.js                 ISOLATED world — the only link to browser.*
 src/background.js             settings, API allowlist, network-policy lifecycle, badge
 src/lockdown.js               pure global DNR/CSP policy definitions (extension pages only)
 src/popup.html|js             per-page activity + pause toggle
-src/options.html|js           feature switches
+src/options.html|js           feature switches and paused-site recovery
 test/selftest.html|js         before/after verification page
 test/font-probes.js           local-font diagnostics (not a protection)
 test/probe-values.js          shared passive window/worker diagnostic values

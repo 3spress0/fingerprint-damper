@@ -28,13 +28,33 @@ function hash(str) {
 
 // --- GPU ---------------------------------------------------------------
 let gpu = 'no webgl';
+let webglDebugInfo = 'n/a';
 try {
   const c = document.createElement('canvas');
   const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
-  const ext = gl.getExtension('WEBGL_debug_renderer_info');
-  gpu = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
-} catch (e) { gpu = 'error: ' + e.message; }
+  if (gl) {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    webglDebugInfo = ext ? 'available' : 'hidden or unsupported';
+    gpu = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(gl.getParameter(gl.RENDERER));
+  }
+} catch (e) { gpu = 'error: ' + e.message; webglDebugInfo = 'error: ' + e.message; }
 add('WebGL renderer', gpu, gpu === 'Mozilla');
+add('WebGL debug renderer info', webglDebugInfo, null);
+
+let webglPixelHash = 'n/a';
+try {
+  const c = document.createElement('canvas');
+  const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+  if (gl) {
+    gl.clearColor(0.25, 0.5, 0.75, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    const pixels = new Uint8Array(4 * 4 * 4);
+    gl.readPixels(0, 0, 4, 4, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    webglPixelHash = hash(Array.from(pixels).join(','));
+    const lose = gl.getExtension('WEBGL_lose_context');
+    if (lose) lose.loseContext();
+  }
+} catch (e) { webglPixelHash = 'error: ' + e.message; }
+add('WebGL pixel hash (readPixels)', webglPixelHash, null);
 
 // --- Canvas ------------------------------------------------------------
 let canvasHash = 'n/a';
@@ -121,6 +141,7 @@ add('AudioContext hash', audioHash, null);
 
 // --- Hardware / geometry ----------------------------------------------
 add('hardwareConcurrency', String(navigator.hardwareConcurrency), navigator.hardwareConcurrency === 8);
+if ('deviceMemory' in navigator) add('deviceMemory', String(navigator.deviceMemory), navigator.deviceMemory === 8);
 add('screen.width \u00d7 height', screen.width + ' \u00d7 ' + screen.height, null);
 add('screen.avail \u2212 screen', (screen.width - screen.availWidth) + ' \u00d7 ' + (screen.height - screen.availHeight),
     screen.availWidth === screen.width && screen.availHeight === screen.height);
@@ -202,7 +223,7 @@ Promise.all([globalThis.__fpdProbeValues(), probeWorkers()]).then(([page, worker
   for (const result of workers) {
     const v = result.values;
     const value = result.status === 'ok'
-      ? `locale ${v.locale}; zone ${v.timezone}; cores ${v.cores}; canvas ${v.canvas}; math ${v.math}`
+      ? `locale ${v.locale}; zone ${v.timezone}; cores ${v.cores}; memory ${v.memory}; canvas ${v.canvas}; math ${v.math}`
       : result.status + ': ' + (result.message || 'API not exposed');
     rows.push(['Worker ' + result.kind + ' (not API-patched)', value, null]);
   }
