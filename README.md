@@ -29,9 +29,8 @@ deobfuscated PropellerAds SDK was found reading GPU model, battery level, screen
 timezone and window position through ordinary DOM calls — none of which an ad blocker can prevent
 once the script has loaded. This extension targets exactly those surfaces.
 
-**Status:** `web-ext lint` → 0 errors, 0 warnings, 0 notices. Packaged zip lives in `package/`
-(filename tracks `manifest.json`'s version — check there rather than here, this line has gone
-stale before).
+**v1.1.0 status:** `web-ext lint` → 0 errors, 0 warnings, 0 notices. Packaged zip lives in
+`package/` (filename tracks `manifest.json`'s version).
 
 ---
 
@@ -50,9 +49,10 @@ The three are complementary:
 | Network | Privacy Badger | Heuristically learns third parties that track across sites |
 | **API** | **this** | **Changes what a script that got through is able to read** |
 
-There is a small deliberate overlap: a `declarativeNetRequest` ruleset blocking the specific
-PropellerAds/RTMark hosts found in the teardown, since fresh operator domains often aren't on
-filter lists yet.
+There is a small deliberate overlap: a `declarativeNetRequest` ruleset blocks the specific
+PropellerAds/RTMark hosts found in the teardown plus a reviewed snapshot of public ad-network
+lists. It is deliberately much narrower than a general-purpose ad blocker and keeps the
+source-derived entries third-party-only to limit breakage.
 
 ---
 
@@ -102,7 +102,7 @@ Even the default protections can affect some sites; the per-site pause is the es
 | Hardware capacity | `hardwareConcurrency` → 8 and, only if the browser already exposes it, `deviceMemory` → 8. No API is invented; worker navigators remain native. |
 | Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell when its getters are patchable; native failures remain failures. Level plus discharge time is a startlingly good short-term cross-site correlator. |
 | Push guard | `Notification.requestPermission()` resolves `"default"` with **no dialog**; service workers matching known ad patterns are refused. |
-| Network block | DNR rules for `9hito.com`, `zdzhk.com`, `kbvcd.com`, `rtmark.net`, `dulotadtor.com`, `abunownon.com`, `dawac.com`, `10zon.com`, `kocmg.com`, `blxwnnw.com` (from the original teardown), plus `lzrikate.com`, `pheegoab.click`, `phenver.com`, `pushno.com`, sourced from [LanikSJ/ubo-filters' PropellerAds Domains Filter List](https://github.com/LanikSJ/ubo-filters) (MIT). |
+| Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). The 64 newly added source-derived domains apply only to third-party requests. See [source notice and pinned snapshot](rules/NOTICE.md). |
 
 Note `requestPermission` returns `"default"`, not `"denied"`. "Denied" is a sticky, distinguishable
 state; "default" reads as *the user dismissed it*, which is both commonplace and unremarkable.
@@ -304,6 +304,7 @@ than claiming success.
 manifest.json                 MV3, Firefox event page (not a service worker)
 web-ext-config.cjs            package destination + excludes Node/browser test artifacts
 rules/adnets.json             declarativeNetRequest blocklist
+rules/NOTICE.md               public source provenance and license notice
 src/inject.js                 MAIN world, document_start — all API patches
 src/bridge.js                 ISOLATED world — the only link to browser.*
 src/background.js             settings, API allowlist, network-policy lifecycle, badge

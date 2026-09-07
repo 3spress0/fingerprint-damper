@@ -104,7 +104,7 @@ allowlisting also retires cached rounding wrappers until reload.
 No production Worker/SharedWorker constructor or worker response is rewritten.
 The diagnostic fixtures use the same passive probes in the window and in fresh,
 short-lived workers; they do **not** inject `src/inject.js` into those workers.
-The separate [global lockdown (introduced in v1.5)](lockdown.md) can opt in to browser-enforced denial
+The separate [global lockdown](lockdown.md) can opt in to browser-enforced denial
 of new worker execution on covered documents. This is not worker API normalization;
 the table below describes workers that are allowed to run (including existing workers).
 

@@ -27,8 +27,8 @@ const SAFE = [
    'Reports full and charging while retaining the native BatteryManager shell where available. Battery level is a strong short-term cross-site correlator.'],
   ['pushGuard', 'Block push-ad funnels',
    'Silently dismisses notification permission requests and blocks known ad service workers.'],
-  ['netBlock', 'Block known push-ad networks',
-   'Network-level block for the RTMark/PropellerAds hosts. Converter sites keep working \u2014 only the ad layer is cut.'],
+  ['netBlock', 'Block known ad / push networks',
+   'Network-level block for 78 teardown and public-list ad/push domains. The expanded source-derived entries apply only to third-party requests; this is still narrower than a full ad blocker.'],
   ['stats', 'Count activity for the popup',
    'Slightly increases detectability, since it needs a page-visible event channel. Turn off for a quieter profile.']
 ];

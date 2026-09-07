@@ -1,4 +1,4 @@
-# Global lockdown (introduced in v1.5)
+# Global lockdown
 
 **Nine independent opt-ins, all off by default.** These are intentionally
 high-breakage browser network/CSP rules, not more spoofed API results. They apply
