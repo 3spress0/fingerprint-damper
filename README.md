@@ -99,7 +99,7 @@ Even the default protections can affect some sites; the per-site pause is the es
 | Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. Inaudible. A `WeakSet` prevents repeated reads from accumulating drift. |
 | Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. |
 | CPU cores | `hardwareConcurrency` → 8. |
-| Battery | `getBattery()` → always full and charging. Level plus discharge time is a startlingly good short-term cross-site correlator. |
+| Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell when its getters are patchable; native failures remain failures. Level plus discharge time is a startlingly good short-term cross-site correlator. |
 | Push guard | `Notification.requestPermission()` resolves `"default"` with **no dialog**; service workers matching known ad patterns are refused. |
 | Network block | DNR rules for `9hito.com`, `zdzhk.com`, `kbvcd.com`, `rtmark.net`, `dulotadtor.com`, `abunownon.com`, `dawac.com`, `10zon.com`, `kocmg.com`, `blxwnnw.com` (from the original teardown), plus `lzrikate.com`, `pheegoab.click`, `phenver.com`, `pushno.com`, sourced from [LanikSJ/ubo-filters' PropellerAds Domains Filter List](https://github.com/LanikSJ/ubo-filters) (MIT). |
 
@@ -176,6 +176,12 @@ Release Firefox enforces signing with no override; for that you'd need to submit
 Requires **Firefox 142+** (`world: "MAIN"` content scripts landed in 128;
 `data_collection_permissions` in 140; Android parity in 142).
 
+### Build a local zip
+
+From the repository root, run `npx web-ext build` (or an installed `web-ext build`).
+`web-ext-config.cjs` writes the versioned archive to ignored `package/` and excludes the Node/browser
+test artifacts from the installable zip.
+
 ---
 
 ## Verify it works
@@ -208,11 +214,15 @@ A file-based or JS-driven self-test cannot prove that scripts were blocked befor
 
 Toolbar badge shows how many fingerprint reads were intercepted on the current page. Click for a
 breakdown and a **Pause API patches on this site** button (per-origin, persists, reloads the tab).
-The badge counts page API reports, not DNR/network blocks.
+The badge counts page API reports, not DNR/network blocks. Settings also has a **Paused sites** list:
+resume one origin, or confirm **Resume API patches on all sites**, without needing to revisit a broken
+page. Reload tabs after resuming so their page-world hooks are installed again.
 
-API pause never disables the global ad-network switch or global lockdown. If lockdown breaks a
-site, turn off the relevant global switch or use **Turn off all lockdown**, then reload. If removal
-fails, disable the extension in `about:addons`; the UI reports failures rather than claiming success.
+API pause never disables the global ad-network switch or global lockdown. The Paused sites controls
+only change that per-origin API list; they do not make global network/CSP rules permissive. If
+lockdown breaks a site, turn off the relevant global switch or use **Turn off all lockdown**, then
+reload. If removal fails, disable the extension in `about:addons`; the UI reports failures rather
+than claiming success.
 
 ---
 
@@ -257,6 +267,11 @@ fails, disable the extension in `about:addons`; the UI reports failures rather t
   objects, native change-event timing, real capture/track APIs and explicit permission outcomes
   remain available. Permission support/errors remain observable. The Push guard controls
   notification requests independently from passive permission-state masking.
+- **Battery masking is value masking, not battery isolation.** Where the browser exposes patchable
+  `BatteryManager` getters, the native manager identity/events remain so compatibility is preserved;
+  event timing and saved native getters can still reveal changes. Native rejections stay rejections.
+  With the battery switch off, `getBattery()` returns its native result instead of an extension-made
+  error.
 - **Math rounding is experimental, not engine standardisation.** Exact identities and numerical
   algorithms can change. Arithmetic operators, WebAssembly, unpatched globals and rounding-boundary
   differences remain available to probes. It is deliberately off by default.
@@ -272,13 +287,14 @@ fails, disable the extension in `about:addons`; the UI reports failures rather t
 
 ```
 manifest.json                 MV3, Firefox event page (not a service worker)
+web-ext-config.cjs            package destination + excludes Node/browser test artifacts
 rules/adnets.json             declarativeNetRequest blocklist
 src/inject.js                 MAIN world, document_start — all API patches
 src/bridge.js                 ISOLATED world — the only link to browser.*
 src/background.js             settings, API allowlist, network-policy lifecycle, badge
 src/lockdown.js               pure global DNR/CSP policy definitions (extension pages only)
 src/popup.html|js             per-page activity + pause toggle
-src/options.html|js           feature switches
+src/options.html|js           feature switches and paused-site recovery
 test/selftest.html|js         before/after verification page
 test/font-probes.js           local-font diagnostics (not a protection)
 test/probe-values.js          shared passive window/worker diagnostic values

@@ -526,19 +526,52 @@
     }
 
     // Battery level + charge/discharge time is a startlingly good short-term
-    // cross-site correlator. Firefox gates this already; belt and braces.
-    patchMethod(Navigator.prototype, 'getBattery', () =>
+    // cross-site correlator. Keep the native BatteryManager identity, EventTarget
+    // behavior and rejection/receiver semantics where its configurable getters
+    // are available; a plain stable fallback is only for unusual partial APIs.
+    const BATTERY_VALUES = {
+      charging: true, chargingTime: 0, dischargingTime: Infinity, level: 1
+    };
+    let nativeBatteryMask = false;
+    if (window.BatteryManager) {
+      let patched = 0;
+      for (const [name, value] of Object.entries(BATTERY_VALUES)) {
+        const desc = Object.getOwnPropertyDescriptor(BatteryManager.prototype, name);
+        if (!desc || !desc.configurable || typeof desc.get !== 'function') continue;
+        try {
+          Object.defineProperty(BatteryManager.prototype, name, {
+            ...desc,
+            get() {
+              const nativeValue = desc.get.call(this); // preserve brand checks
+              return active && cfg.battery ? value : nativeValue;
+            }
+          });
+          restore.push(() => { try { Object.defineProperty(BatteryManager.prototype, name, desc); } catch (_) {} });
+          patched++;
+        } catch (_) {}
+      }
+      nativeBatteryMask = patched === Object.keys(BATTERY_VALUES).length;
+    }
+    const fallbackBattery = {
+      addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; },
+      onchargingchange: null, onchargingtimechange: null,
+      ondischargingtimechange: null, onlevelchange: null
+    };
+    for (const [name, value] of Object.entries(BATTERY_VALUES)) {
+      Object.defineProperty(fallbackBattery, name, { enumerable: true, get: () => value });
+    }
+    patchMethod(Navigator.prototype, 'getBattery', (orig) =>
       function getBattery() {
-        if (!(active && cfg.battery)) return Promise.reject(new Error('unavailable'));
-        report('battery');
-        return Promise.resolve({
-          charging: true,
-          chargingTime: 0,
-          dischargingTime: Infinity,
-          level: 1,
-          addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; },
-          onchargingchange: null, onchargingtimechange: null,
-          ondischargingtimechange: null, onlevelchange: null
+        // Always call native first: an invalid receiver and native rejection must
+        // stay observable as such. If masking is off, return the exact native
+        // promise rather than a wrapper/rejection of our own.
+        const result = orig.apply(this, arguments);
+        if (!(active && cfg.battery)) return result;
+        return Promise.resolve(result).then((battery) => {
+          // Settings may change while the native promise is pending.
+          if (!(active && cfg.battery)) return battery;
+          report('battery');
+          return nativeBatteryMask ? battery : fallbackBattery;
         });
       });
   }

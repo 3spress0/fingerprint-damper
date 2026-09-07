@@ -14,8 +14,9 @@ LANG=tr_TR.UTF-8 TZ=Europe/Istanbul node --test test/*.test.cjs
 The tests isolate installations in VMs. Canvas/geometry and passive browser APIs
 use DOM doubles; locale/Math tests use the real Node implementations. Coverage
 includes deterministic seeds, noise budgets, native containers, live settings,
-restoration, explicit locale choices, permission/native-request separation, promise
-errors, Math rounding/ties/special values, and argument/constructor semantics.
+restoration, exact native Battery API fallback/rejections, explicit locale choices,
+permission/native-request separation, promise errors, Math rounding/ties/special values,
+and argument/constructor semantics.
 Math is also checked alongside canvas, rect and locale protection.
 
 Worker-driver tests cover unsupported APIs, origin/CSP-style failures, timeouts,
@@ -37,8 +38,8 @@ a simplified rule matcher: **not native DNR/CSP or sandbox validation**.
 4. All checks should pass. Repeat in a non-English browser profile, preferably
    with a non-UTC time zone. Reload to rerun; the final test restores the native APIs.
 
-This checks native rect/list behavior, locale formatting, passive masking, Math
-results and restoration. Unsupported/rejected passive APIs are labelled as skipped,
+This checks native rect/list and BatteryManager behavior, locale formatting, passive masking,
+Math results and restoration. Unsupported/rejected passive APIs are labelled as skipped,
 not successful protection. No automatic capture, speech playback or permission
 requests are made. The window checks can run from a file without dependencies;
 the worker audit may need HTTP (see below).
@@ -62,8 +63,12 @@ use `test/selftest.html` instead:
 - Enable **Default to UTC timezone**. Default date formatting must actually use UTC,
   not just report it in `resolvedOptions()`. Explicit time zones remain unchanged.
 - Disable each setting and repeat. Pause API patches on the HTTP site and reload to verify restoration.
-  API pause does not exempt a site from global DNR rules.
-  Cached formatters and previously returned snapshots do not change retroactively.
+  Use Settings → **Paused sites** to resume that origin (or confirm resuming all paused origins)
+  without reopening it, then reload affected tabs. API pause does not exempt a site from global
+  DNR rules. Cached formatters and previously returned snapshots do not change retroactively.
+- Where the browser exposes `navigator.getBattery()`, verify the default reads as full/charging,
+  then turn **Neutralise Battery API** off and verify its native result/rejection is restored.
+  Battery event timing remains a deliberate compatibility/privacy boundary.
 - Enable voice/device hiding separately. The corresponding lists should be empty,
   while permission queries/capture/playback remain independent. A native empty list
   alone does not demonstrate protection. Check actual voice/device pickers manually

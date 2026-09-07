@@ -29,6 +29,13 @@
     background: color-mix(in srgb, #d98b2b 10%, transparent);
     font-size: 12px; border-radius: 0 6px 6px 0;
   }
+  .paused-site {
+    display: flex; gap: 10px; align-items: center; justify-content: space-between;
+    padding: 7px 10px; border-radius: 7px;
+  }
+  .paused-site:nth-child(odd) { background: color-mix(in srgb, CanvasText 5%, transparent); }
+  .paused-site code { min-width: 0; overflow-wrap: anywhere; font: 12px ui-monospace, monospace; }
+  .paused-site button { flex: none; margin: 0; }
   button { font: inherit; padding: 8px 10px; margin: 8px 6px 4px 0; cursor: pointer; }
   button:disabled, input:disabled { cursor: wait; }
   #policy-status, #save-error { font-size: 12px; overflow-wrap: anywhere; }
@@ -56,6 +63,12 @@
     delivery estimates, and will flip some sites into the wrong language.
     Turn these on only if you accept that.
   </div>
+
+  <h2>Paused sites</h2>
+  <p class="d">These origins receive native page APIs after reload. Resuming patches here never changes
+    the ad-network switch or global lockdown rules.</p>
+  <div id="paused-sites" aria-live="polite"></div>
+  <button id="resume-all" type="button" hidden>Resume API patches on all sites…</button>
 
   <h2>Global lockdown — experimental, extreme breakage</h2>
   <div class="warn">

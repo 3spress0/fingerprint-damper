@@ -1,11 +1,28 @@
 # Coverage and trust boundaries
 
-The 1.4 controls below are **off by default**. They reduce specific page-visible
-observations; they do not establish an undetectable browser persona or replace
-browser-level privacy policies. They add no extension permissions and make no
-proxy, certificate, capture or grant changes. Page-world configuration/statistics
-channels are observable and configuration events can be spoofed by hostile page
-code. These hooks are not a tamper-proof security boundary.
+The opt-in API controls described below are **off by default**; this document also records
+compatibility/trust boundaries for default protections where implementation details matter. These
+controls reduce specific page-visible observations; they do not establish an undetectable browser
+persona or replace browser-level privacy policies. They add no extension permissions and make no
+proxy, certificate, capture or grant changes. Page-world configuration/statistics channels are
+observable and configuration events can be spoofed by hostile page code. These hooks are not a
+tamper-proof security boundary.
+
+## Battery API compatibility and limits
+
+When `navigator.getBattery()` is available, the default battery control still invokes the native
+method first. This preserves native receiver validation and a browser's real rejection path rather
+than inventing an `"unavailable"` error. If all four configurable `BatteryManager` value getters are
+available, the returned native manager keeps its identity and `EventTarget` behavior while
+`charging`, `chargingTime`, `dischargingTime`, and `level` read as full/charging values. The control
+checks its setting again when the native promise settles, so a live disable can return the native
+manager instead.
+
+An unusual partial Battery API falls back to one stable plain manager-shaped value after a successful
+native promise rather than leaking a partially masked manager. This fallback is less compatible and
+is deliberately not presented as a native object. In either implementation, existing native getter
+references, battery-event timing, early page code, and any unpatched realm remain potential signals.
+With the battery setting disabled, `getBattery()` returns the exact native promise/result.
 
 ## Passive window APIs
 
@@ -60,7 +77,7 @@ allowlisting also retires cached rounding wrappers until reload.
 No production Worker/SharedWorker constructor or worker response is rewritten.
 The diagnostic fixtures use the same passive probes in the window and in fresh,
 short-lived workers; they do **not** inject `src/inject.js` into those workers.
-The separate [v1.5 global lockdown](lockdown.md) can opt in to browser-enforced denial
+The separate [global lockdown (introduced in v1.5)](lockdown.md) can opt in to browser-enforced denial
 of new worker execution on covered documents. This is not worker API normalization;
 the table below describes workers that are allowed to run (including existing workers).
 

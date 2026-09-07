@@ -209,12 +209,40 @@ test('global policy is not exempted by per-origin API pause', async () => {
   assert.ok(policy.keys.every(key => !Object.hasOwn(config.settings, key)));
 });
 
+test('Settings can inspect and selectively resume canonical API-paused origins', async () => {
+  const env = setup();
+  env.state.allowlist = ['https://z.test', 'not an origin', 'https://site.test', 'https://site.test'];
+  await env.ready();
+  const listed = await env.send({ type: 'getAllowlist' });
+  assert.deepEqual(clone(listed), { ok: true, allowlist: ['https://site.test', 'https://z.test'] });
+  assert.equal((await env.send({ type: 'getConfig' }, PAGE)).allowlisted, true);
+
+  const beforeRules = clone(env.state.dynamic);
+  const result = await env.send({ type: 'removeAllowlist', origin: 'https://site.test' });
+  assert.equal(result.ok, true);
+  assert.equal(result.removed, true);
+  assert.deepEqual(env.state.allowlist, ['https://z.test']);
+  assert.equal((await env.send({ type: 'getConfig' }, PAGE)).allowlisted, false);
+  assert.deepEqual(env.state.dynamic, beforeRules);
+
+  const noOpWrites = env.writes.length;
+  assert.deepEqual(clone(await env.send({ type: 'removeAllowlist', origin: 'https://missing.test' })),
+    { ok: true, removed: false });
+  assert.equal(env.writes.length, noOpWrites);
+  assert.equal((await env.send({ type: 'removeAllowlist', origin: 'https://z.test/path' })).ok, false);
+  const cleared = await env.send({ type: 'clearAllowlist' });
+  assert.deepEqual(clone(cleared), { ok: true, cleared: 1 });
+  assert.deepEqual(env.state.allowlist, []);
+  assert.deepEqual(env.state.dynamic, beforeRules);
+});
+
 test('privileged messages reject content scripts and misleading extension URLs', async () => {
   const env = setup();
   await env.ready();
   for (const sender of [PAGE, { ...UI, id: 'other-extension' },
     { ...UI, url: 'moz-extension://unit.attacker/src/options.html' }, { ...UI, url: 'https://site.test/moz-extension://unit/' }]) {
-    for (const type of ['setSettings', 'disableLockdown', 'toggleAllowlist', 'popupData']) {
+    for (const type of ['setSettings', 'disableLockdown', 'toggleAllowlist', 'removeAllowlist',
+      'clearAllowlist', 'getAllowlist', 'popupData']) {
       assert.equal((await env.send({ type, settings: all, origin: 'https://site.test' }, sender)).ok, false);
     }
   }

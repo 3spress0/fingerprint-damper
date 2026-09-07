@@ -9,7 +9,7 @@ const { test } = require('node:test');
 const vm = require('node:vm');
 const injection = new vm.Script(readFileSync(join(__dirname, '../src/inject.js'), 'utf8'));
 
-function setup({ absent = false, mathStub = false } = {}) {
+function setup({ absent = false, mathStub = false, batteryManager = true } = {}) {
   const context = vm.createContext({});
   vm.runInContext(`
     globalThis.window = globalThis;
@@ -59,6 +59,28 @@ function setup({ absent = false, mathStub = false } = {}) {
       getUserMedia(constraints) { this.captures++; return Promise.resolve({ constraints }); }
       selectAudioOutput() { return Promise.resolve(this.devices[2]); }
     }
+    class BatteryManager extends EventTarget {
+      constructor() {
+        super();
+        this.actual = { charging: false, chargingTime: 123, dischargingTime: 456, level: 0.42 };
+      }
+      get charging() {
+        if (!(this instanceof BatteryManager)) throw new TypeError('invalid BatteryManager receiver');
+        return this.actual.charging;
+      }
+      get chargingTime() {
+        if (!(this instanceof BatteryManager)) throw new TypeError('invalid BatteryManager receiver');
+        return this.actual.chargingTime;
+      }
+      get dischargingTime() {
+        if (!(this instanceof BatteryManager)) throw new TypeError('invalid BatteryManager receiver');
+        return this.actual.dischargingTime;
+      }
+      get level() {
+        if (!(this instanceof BatteryManager)) throw new TypeError('invalid BatteryManager receiver');
+        return this.actual.level;
+      }
+    }
     class PermissionStatus extends EventTarget {
       constructor(name, state) { super(); this.name = name; this.actualState = state; }
       get state() {
@@ -78,6 +100,23 @@ function setup({ absent = false, mathStub = false } = {}) {
         return this.statuses[name] ? Promise.resolve(this.statuses[name]) : Promise.reject(new TypeError('unsupported permission'));
       }
     }
+    class Navigator {
+      constructor() {
+        this.mediaDevices = new MediaDevices();
+        this.permissions = new Permissions();
+        this.battery = new BatteryManager();
+        this.batteryCalls = 0;
+      }
+      get hardwareConcurrency() {
+        if (!(this instanceof Navigator)) throw new TypeError('invalid Navigator receiver');
+        return 12;
+      }
+      getBattery() {
+        if (!(this instanceof Navigator)) throw new TypeError('invalid Navigator receiver');
+        this.batteryCalls++;
+        return this.batteryFailure ? Promise.reject(this.batteryFailure) : this.batteryPending || Promise.resolve(this.battery);
+      }
+    }
     class Notification {
       static get permission() { return 'granted'; }
       static requestPermission(callback) {
@@ -86,14 +125,18 @@ function setup({ absent = false, mathStub = false } = {}) {
       }
     }
     Notification.requests = 0;
-    Object.assign(globalThis, { CustomEvent, EventTarget, SpeechSynthesis, MediaDevices, PermissionStatus, Permissions, Notification });
+    Object.assign(globalThis, { CustomEvent, EventTarget, SpeechSynthesis, MediaDevices, BatteryManager,
+      PermissionStatus, Permissions, Navigator, Notification });
     globalThis.document = new EventTarget();
     document.addEventListener('__fpd_stats', event => events.push(JSON.parse(event.detail)));
     globalThis.speechSynthesis = new SpeechSynthesis();
-    globalThis.navigator = { mediaDevices: new MediaDevices(), permissions: new Permissions() };
+    globalThis.navigator = new Navigator();
     globalThis.native = {
       voices: SpeechSynthesis.prototype.getVoices, speak: SpeechSynthesis.prototype.speak,
       devices: MediaDevices.prototype.enumerateDevices, capture: MediaDevices.prototype.getUserMedia,
+      battery: Navigator.prototype.getBattery,
+      batteryValues: Object.fromEntries(['charging', 'chargingTime', 'dischargingTime', 'level']
+        .map(name => [name, Object.getOwnPropertyDescriptor(BatteryManager.prototype, name)])),
       query: Permissions.prototype.query,
       state: Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state'),
       notification: Object.getOwnPropertyDescriptor(Notification, 'permission'),
@@ -108,6 +151,7 @@ function setup({ absent = false, mathStub = false } = {}) {
     };
   `, context);
   if (mathStub) vm.runInContext('Math.sin = function sin() { return globalThis.mathValue; };', context);
+  if (!batteryManager) vm.runInContext('delete globalThis.BatteryManager;', context);
   if (absent) vm.runInContext(`
     delete globalThis.SpeechSynthesis; delete globalThis.speechSynthesis; delete globalThis.MediaDevices;
     delete globalThis.PermissionStatus; delete globalThis.Notification;
@@ -137,6 +181,51 @@ test('new passive and Math settings leave native results unchanged by default', 
     Notification.permission === 'granted' && Math.sin(1) === native.math.sin(1) &&
     Math.sin === native.math.sin && navigator.permissions.query === native.query)()`), true);
   assert.deepEqual(env.stats(), {});
+});
+
+test('Battery masking keeps the native manager shell and restores exact native behavior when off', async () => {
+  const env = setup();
+  assert.equal(await env.evaluate(`(async () => {
+    const first = await navigator.getBattery();
+    const second = await navigator.getBattery();
+    let events = 0;
+    first.addEventListener('levelchange', () => { events++; });
+    first.dispatchEvent({ type: 'levelchange' });
+    return first === navigator.battery && first === second && first instanceof BatteryManager && events === 1 &&
+      first.charging === true && first.chargingTime === 0 && first.dischargingTime === Infinity && first.level === 1 &&
+      native.batteryValues.charging.get.call(first) === false && native.batteryValues.level.get.call(first) === 0.42 &&
+      navigator.batteryCalls === 2;
+  })()`), true);
+  assert.throws(() => env.evaluate('Navigator.prototype.getBattery.call({})'), /invalid Navigator/);
+  assert.deepEqual(env.stats(), { battery: 2 });
+
+  env.configure({ settings: { battery: false } });
+  assert.equal(await env.evaluate(`(async () => {
+    const result = navigator.getBattery();
+    const battery = await result;
+    return result instanceof Promise && battery === navigator.battery && battery.charging === false &&
+      battery.chargingTime === 123 && battery.dischargingTime === 456 && battery.level === 0.42;
+  })()`), true);
+
+  env.configure({ settings: { battery: true } });
+  assert.equal(await env.evaluate(`(async () => {
+    const failure = new Error('native battery failure');
+    navigator.batteryFailure = failure;
+    try { await navigator.getBattery(); } catch (error) { return error === failure; }
+    return false;
+  })()`), true);
+});
+
+test('Battery masking uses one stable safe fallback for an unusual partial API', async () => {
+  const env = setup({ batteryManager: false });
+  assert.equal(await env.evaluate(`(async () => {
+    const first = await navigator.getBattery();
+    const second = await navigator.getBattery();
+    return first === second && first !== navigator.battery && first.charging === true &&
+      first.chargingTime === 0 && first.dischargingTime === Infinity && first.level === 1;
+  })()`), true);
+  env.configure({ settings: { battery: false } });
+  assert.equal(await env.evaluate('(async () => await navigator.getBattery() === navigator.battery)()'), true);
 });
 
 test('voice hiding returns a fresh empty list without replacing voices, speech or events', () => {
@@ -359,6 +448,8 @@ test('allowlisting restores all new methods, descriptors and native Math behavio
   env.configure({ allowlisted: true });
   assert.equal(await env.evaluate(`(async () =>
     SpeechSynthesis.prototype.getVoices === native.voices && MediaDevices.prototype.enumerateDevices === native.devices &&
+    Navigator.prototype.getBattery === native.battery &&
+    Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get === native.batteryValues.level.get &&
     Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get === native.state.get &&
     Object.getOwnPropertyDescriptor(Notification, 'permission').get === native.notification.get &&
     Notification.requestPermission === native.request && Math.sin === native.math.sin &&

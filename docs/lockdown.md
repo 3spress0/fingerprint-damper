@@ -1,4 +1,4 @@
-# Global lockdown (v1.5)
+# Global lockdown (introduced in v1.5)
 
 **Eight independent opt-ins, all off by default.** These are intentionally
 high-breakage browser network/CSP rules, not more spoofed API results. They apply
@@ -37,7 +37,9 @@ never-settling promises: the browser denies the operation/request normally.
    profile with no site data/service workers for meaningful isolation testing.
 3. To recover, use **Turn off all lockdown** in the popup or Settings. This changes
    only lockdown settings and managed rules; it leaves API preferences, API pause
-   entries and the separate ad-network switch alone.
+   entries and the separate ad-network switch alone. Manage ordinary API pause entries
+   separately in Settings → **Paused sites**; resuming one/all there still does not relax
+   lockdown rules.
 4. Reload affected pages again. Already delivered CSP/sandbox policies remain on
    those documents until replaced; back/forward cache can resurrect old documents.
    Tabs are **not auto-reloaded**, to avoid destroying unsaved work.

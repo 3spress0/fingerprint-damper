@@ -71,14 +71,22 @@ async function getSettings() {
     Object.hasOwn(values, key) && typeof values[key] === 'boolean' ? values[key] : fallback]));
 }
 
-async function getAllowlist() {
-  const stored = await api.storage.local.get('allowlist');
-  return Array.isArray(stored.allowlist) ? stored.allowlist : [];
-}
-
 function originOf(href) {
   try { const value = new URL(href).origin; return value === 'null' ? null : value; }
   catch (_) { return null; }
+}
+
+function isCanonicalOrigin(value) {
+  return typeof value === 'string' && originOf(value) === value;
+}
+
+async function getAllowlist() {
+  const stored = await api.storage.local.get('allowlist');
+  // Only canonical origins can be written through this extension. Filter stale
+  // or malformed old storage values here so Settings never renders an entry it
+  // cannot safely remove, and deduplicate a hand-edited/legacy list.
+  const list = Array.isArray(stored.allowlist) ? stored.allowlist : [];
+  return [...new Set(list.filter(isCanonicalOrigin))].sort();
 }
 
 // Serialise writes, including event-page startup/restarts. Dynamic rule updates
@@ -164,11 +172,22 @@ async function changeSettings(patch) {
   return result;
 }
 
+async function saveAllowlist(list) {
+  await api.storage.local.set({ allowlist: list });
+  // Deliberately do not change global network/CSP rules or create allow rules.
+  try {
+    await broadcast();
+    return { ok: true };
+  } catch (error) {
+    return { ok: true, warning: 'Saved, but live updates failed: ' + errorText(error) + '. Reload affected pages.' };
+  }
+}
+
 // ------------------------------------------------------------------ messages
 api.runtime.onMessage.addListener((msg, sender) => {
   if (!msg || typeof msg !== 'object') return;
-  if (['popupData', 'setSettings', 'toggleAllowlist', 'disableLockdown'].includes(msg.type) &&
-      !fromExtensionPage(sender)) {
+  if (['popupData', 'getAllowlist', 'setSettings', 'toggleAllowlist', 'removeAllowlist',
+       'clearAllowlist', 'disableLockdown'].includes(msg.type) && !fromExtensionPage(sender)) {
     return Promise.resolve({ ok: false, error: 'This action requires an extension page.' });
   }
 
@@ -210,22 +229,43 @@ api.runtime.onMessage.addListener((msg, sender) => {
     });
   }
 
+  if (msg.type === 'getAllowlist') {
+    return enqueue(async () => ({ ok: true, allowlist: await getAllowlist() }));
+  }
+
   if (msg.type === 'setSettings') return enqueue(() => changeSettings(msg.settings));
   if (msg.type === 'disableLockdown') return enqueue(() => changeSettings(FPDLockdown.defaults));
 
   if (msg.type === 'toggleAllowlist') {
     return enqueue(async () => {
       const origin = msg.origin;
-      if (!origin || originOf(origin) !== origin) return { ok: false, error: 'Invalid origin.' };
+      if (!isCanonicalOrigin(origin)) return { ok: false, error: 'Invalid origin.' };
       const list = await getAllowlist();
       const idx = list.indexOf(origin);
       if (idx >= 0) list.splice(idx, 1); else list.push(origin);
-      await api.storage.local.set({ allowlist: list });
-      // Deliberately do not change global network/CSP rules or create allow rules.
-      let warning;
-      try { await broadcast(); }
-      catch (error) { warning = 'Saved, but live updates failed: ' + errorText(error) + '. Reload affected pages.'; }
-      return { ok: true, allowlisted: idx < 0, ...(warning ? { warning } : {}) };
+      const result = await saveAllowlist(list.sort());
+      return { ...result, allowlisted: idx < 0 };
+    });
+  }
+
+  if (msg.type === 'removeAllowlist') {
+    return enqueue(async () => {
+      const origin = msg.origin;
+      if (!isCanonicalOrigin(origin)) return { ok: false, error: 'Invalid origin.' };
+      const list = await getAllowlist();
+      const next = list.filter(value => value !== origin);
+      if (next.length === list.length) return { ok: true, removed: false };
+      const result = await saveAllowlist(next);
+      return { ...result, removed: true };
+    });
+  }
+
+  if (msg.type === 'clearAllowlist') {
+    return enqueue(async () => {
+      const list = await getAllowlist();
+      if (!list.length) return { ok: true, cleared: 0 };
+      const result = await saveAllowlist([]);
+      return { ...result, cleared: list.length };
     });
   }
 });

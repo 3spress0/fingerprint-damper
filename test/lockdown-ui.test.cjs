@@ -25,9 +25,9 @@ class Element {
   async fire(type = 'click') { if (!this.disabled) await this.events[type]?.({ preventDefault() {} }); }
 }
 function ui(page, initial = {}) {
-  const ids = ['safe', 'risky', 'lockdown', 'lock-max', 'lock-off', 'policy-status', 'save-error', 'saved',
+  const ids = ['safe', 'risky', 'paused-sites', 'resume-all', 'lockdown', 'lock-max', 'lock-off', 'policy-status', 'save-error', 'saved',
     'origin', 'counts', 'allow', 'opts', 'action-error'];
-  const nodes = Object.fromEntries(ids.map(id => [id, new Element(['lock-max', 'lock-off', 'allow'].includes(id) ? 'button' : 'div')]));
+  const nodes = Object.fromEntries(ids.map(id => [id, new Element(['resume-all', 'lock-max', 'lock-off', 'allow'].includes(id) ? 'button' : 'div')]));
   const flatten = node => [node, ...node.children.flatMap(flatten)];
   const document = { getElementById: id => nodes[id], createElement: tag => new Element(tag),
     querySelectorAll: () => Object.values(nodes).flatMap(flatten).filter(node => ['input', 'button'].includes(node.tag)) };
@@ -40,6 +40,10 @@ function ui(page, initial = {}) {
         if (state.failReadOnce) { state.failReadOnce = false; throw new Error('Read failed'); }
         return copy(state.data);
       }
+      if (msg.type === 'getAllowlist') {
+        if (state.failReadOnce) { state.failReadOnce = false; throw new Error('Read failed'); }
+        return { ok: true, allowlist: copy(state.data.pausedOrigins || []) };
+      }
       if (state.failure) return { ok: false, error: state.failure };
       if (msg.type === 'setSettings') Object.assign(state.data.settings, msg.settings);
       if (msg.type === 'disableLockdown') {
@@ -47,6 +51,10 @@ function ui(page, initial = {}) {
         if (state.afterDisable) state.afterDisable();
       }
       if (msg.type === 'toggleAllowlist') state.data.allowlisted = !state.data.allowlisted;
+      if (msg.type === 'removeAllowlist') {
+        state.data.pausedOrigins = (state.data.pausedOrigins || []).filter(origin => origin !== msg.origin);
+      }
+      if (msg.type === 'clearAllowlist') state.data.pausedOrigins = [];
       return { ok: true };
     }, openOptionsPage() {} }, tabs: { async query() { return [{ id: 1 }]; }, async reload() { state.reloads++; } } };
   const context = vm.createContext({ browser, document, setTimeout: () => 1, clearTimeout() {},
@@ -66,14 +74,51 @@ test('options render every lockdown control off without making an opt-in write',
     assert.ok(control);
     assert.equal(control.checked, false);
   }
-  assert.ok(env.state.messages.every(msg => msg.type === 'popupData'));
+  assert.ok(env.state.messages.every(msg => ['popupData', 'getAllowlist'].includes(msg.type)));
+});
+
+test('options lists paused origins and resumes one without changing global settings', async () => {
+  const env = ui('options', { pausedOrigins: ['https://first.test', 'https://second.test'],
+    settings: { lockScripts: true, canvas: false } });
+  await env.ready();
+  const sites = env.nodes['paused-sites'];
+  assert.equal(sites.children.length, 2);
+  assert.equal(sites.children[0].children[0].textContent, 'https://first.test');
+  assert.equal(env.nodes['resume-all'].hidden, false);
+  await sites.children[0].children[1].fire();
+  assert.deepEqual(env.state.data.pausedOrigins, ['https://second.test']);
+  assert.equal(env.state.data.settings.lockScripts, true);
+  assert.equal(env.state.data.settings.canvas, false);
+  assert.ok(env.state.messages.some(msg => msg.type === 'removeAllowlist' && msg.origin === 'https://first.test'));
+  assert.match(env.nodes.saved.textContent, /API patches resumed.*reload affected tabs/);
+  assert.equal(env.nodes.saved.classList.contains('show'), true);
+});
+
+test('resuming all paused origins requires confirmation and shows failures', async () => {
+  const env = ui('options', { pausedOrigins: ['https://first.test', 'https://second.test'] });
+  await env.ready();
+  await env.nodes['resume-all'].fire();
+  assert.ok(!env.state.messages.some(msg => msg.type === 'clearAllowlist'));
+  env.state.confirm = true;
+  await env.nodes['resume-all'].fire();
+  assert.deepEqual(env.state.data.pausedOrigins, []);
+  assert.ok(env.state.messages.some(msg => msg.type === 'clearAllowlist'));
+  assert.equal(env.nodes['resume-all'].hidden, true);
+
+  const failed = ui('options', { pausedOrigins: ['https://failed.test'] });
+  await failed.ready();
+  failed.state.failure = 'Storage unavailable';
+  await failed.nodes['paused-sites'].children[0].children[1].fire();
+  assert.deepEqual(failed.state.data.pausedOrigins, ['https://failed.test']);
+  assert.match(failed.nodes['save-error'].textContent, /Not saved.*Storage unavailable/);
+  assert.equal(failed.nodes.saved.classList.contains('show'), false);
 });
 
 test('maximum lockdown requires confirmation and changes only lockdown settings', async () => {
   const env = ui('options', { settings: { canvas: false, mathRounding: true } });
   await env.ready();
   await env.nodes['lock-max'].fire();
-  assert.ok(env.state.messages.every(msg => msg.type === 'popupData'));
+  assert.ok(env.state.messages.every(msg => ['popupData', 'getAllowlist'].includes(msg.type)));
   env.state.confirm = true;
   await env.nodes['lock-max'].fire();
   assert.ok(env.keys.every(key => env.state.data.settings[key] === true));

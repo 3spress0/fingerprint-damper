@@ -27,6 +27,9 @@
     speak: window.SpeechSynthesis && SpeechSynthesis.prototype.speak,
     devices: window.MediaDevices && MediaDevices.prototype.enumerateDevices,
     capture: navigator.mediaDevices && navigator.mediaDevices.getUserMedia,
+    battery: navigator.getBattery,
+    batteryValues: window.BatteryManager && Object.fromEntries(['charging', 'chargingTime', 'dischargingTime', 'level']
+      .map(name => [name, Object.getOwnPropertyDescriptor(BatteryManager.prototype, name)])),
     query: navigator.permissions && navigator.permissions.query,
     state: window.PermissionStatus && Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state'),
     notification: window.Notification && Object.getOwnPropertyDescriptor(Notification, 'permission'),
@@ -110,6 +113,26 @@
       const rect = caret.getBoundingClientRect();
       assert((raw.width === 0) === (rect.width === 0), 'collapsed width became nonzero');
       assert((raw.height === 0) === (rect.height === 0), 'collapsed height became nonzero');
+    });
+
+    await check('Battery masking keeps a native manager shell and can be disabled', async () => {
+      if (!native.battery || !window.BatteryManager || !native.batteryValues ||
+          !Object.values(native.batteryValues).every(value => value && value.get)) {
+        skip('A patchable Battery API is unavailable.');
+      }
+      let raw;
+      try { raw = await native.battery.call(navigator); }
+      catch (e) { skip('Native Battery API is rejected: ' + e.name); }
+      const first = await navigator.getBattery();
+      const second = await navigator.getBattery();
+      assert(first === raw && first === second && first instanceof BatteryManager, 'native battery manager identity/type changed');
+      assert(first.charging === true && first.chargingTime === 0 && first.dischargingTime === Infinity && first.level === 1,
+        'battery values were not masked');
+      settings({ battery: false });
+      const restored = await navigator.getBattery();
+      assert(restored === raw && restored.charging === native.batteryValues.charging.get.call(raw) &&
+        restored.level === native.batteryValues.level.get.call(raw), 'native battery result was not restored');
+      settings({ battery: true });
     });
 
     settings({ language: true, timezone: true });
@@ -220,6 +243,9 @@
       assert(Number.prototype.toLocaleString === native.number && Date.prototype.toLocaleString === native.date, 'built-in formatting methods not restored');
       if (native.voices) assert(SpeechSynthesis.prototype.getVoices === native.voices, 'voice method not restored');
       if (native.devices) assert(MediaDevices.prototype.enumerateDevices === native.devices, 'device method not restored');
+      if (native.battery) assert(navigator.getBattery === native.battery, 'battery method not restored');
+      if (native.batteryValues?.level) assert(Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get === native.batteryValues.level.get,
+        'battery getter not restored');
       if (native.state) assert(Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get === native.state.get, 'permission getter not restored');
       if (native.notification) assert(Object.getOwnPropertyDescriptor(Notification, 'permission').get === native.notification.get, 'notification getter not restored');
       if (native.request) assert(Notification.requestPermission === native.request, 'request method not restored');
