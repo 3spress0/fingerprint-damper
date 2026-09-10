@@ -13,21 +13,26 @@
 /*
  * Fingerprint Damper - background event page.
  *
- * Owns: settings, per-origin allowlist, the per-session salt, per-tab counters
- * and browser-enforced network/CSP policy (separate from page-world hooks).
+ * Owns: settings, per-origin allowlist, the per-browser-session salt, per-tab
+ * counters and browser-enforced network/CSP policy (separate from page-world
+ * hooks). It is the ONLY writer of the session snapshot that content scripts
+ * read at document_start (see SESSION_KEY below).
  */
 
 const api = typeof browser !== 'undefined' ? browser : chrome;
 
+// v1.2.0 shipped profile: fingerprint damping on, everything that touches
+// application data, prompts or the network is opt-in/experimental.
 const DEFAULTS = {
   canvas: true,
   webgl: true,
-  audio: true,
-  geometry: true,
+  audio: false,
+  geometry: false,
   concurrency: true,
   battery: true,
-  pushGuard: true,
-  netBlock: true,
+  notify: false,
+  swBlock: false,
+  netBlock: false,
   clientRects: false,
   timezone: false,
   language: false,
@@ -40,9 +45,67 @@ const DEFAULTS = {
   ...FPDLockdown.defaults
 };
 
-// Rotates every browser session, so a site cannot link today's canvas hash to
-// yesterday's. Never persisted.
-const SESSION_SALT = Math.random().toString(36).slice(2) + Date.now().toString(36);
+/*
+ * One salt per browser session.
+ *
+ * The MV3 background is an event page: module state (and any Math.random
+ * here) is lost whenever it restarts, which would rotate the per-origin
+ * persona mid-session. So the salt is generated once with
+ * crypto.getRandomValues(), cached in memory, and mirrored into
+ * storage.session, which the browser clears when the session ends.
+ */
+const SALT_RE = /^[0-9a-f]{64}$/;
+const SESSION_KEY = 'fpdSession';   // { salt, settings, allowlist }
+
+let sessionSalt = null;
+
+function makeSalt() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function readSession() {
+  try {
+    const got = await api.storage.session.get(SESSION_KEY);
+    const value = got && got[SESSION_KEY];
+    return value && typeof value === 'object' ? value : null;
+  } catch (_) { return null; }
+}
+
+// Expose storage.session to this extension's content scripts (isolated world
+// only; pages can never reach it). Safe to call again after a restart.
+function openSessionToContentScripts() {
+  try {
+    api.storage.session.setAccessLevel({ accessLevel: 'trusted_and_content_scripts' });
+  } catch (_) {}
+}
+
+/*
+ * Read (or create) the salt and write the full current snapshot:
+ *   { salt, settings (public, lockdown keys excluded), allowlist }
+ * Called on every settings/allowlist change, on event-page start and before
+ * answering a getConfig fallback, so the snapshot in session storage always
+ * matches storage.local.
+ */
+async function sessionSnapshot() {
+  if (!sessionSalt) {
+    const existing = await readSession();
+    if (existing && SALT_RE.test(existing.salt || '')) sessionSalt = existing.salt;
+  }
+  if (!sessionSalt) sessionSalt = makeSalt();
+  const [settings, allowlist] = await Promise.all([getSettings(), getAllowlist()]);
+  const value = {
+    salt: sessionSalt,
+    settings: publicSettings(settings),
+    allowlist
+  };
+  try {
+    openSessionToContentScripts();
+    await api.storage.session.set({ [SESSION_KEY]: value });
+  } catch (_) {}
+  return value;
+}
 
 // tabId -> { origin, counts }
 const tabStats = new Map();
@@ -166,6 +229,9 @@ async function changeSettings(patch) {
   const settings = Object.assign(await getSettings(), patch);
   const result = await applySettings(settings, true);
   if (result.ok) {
+    // Snapshot first, then tell live pages; their bridge re-reads the
+    // snapshot, so it must already reflect the change.
+    await sessionSnapshot();
     try { await broadcast(); }
     catch (error) { result.warning = 'Saved, but live page updates failed: ' + errorText(error) + '. Reload affected pages.'; }
   }
@@ -176,6 +242,7 @@ async function saveAllowlist(list) {
   await api.storage.local.set({ allowlist: list });
   // Deliberately do not change global network/CSP rules or create allow rules.
   try {
+    await sessionSnapshot();
     await broadcast();
     return { ok: true };
   } catch (error) {
@@ -193,10 +260,12 @@ api.runtime.onMessage.addListener((msg, sender) => {
 
   if (msg.type === 'getConfig') {
     return (async () => {
-      const [settings, allowlist] = await Promise.all([getSettings(), getAllowlist()]);
+      // Cold-start fallback for pages whose session snapshot was empty
+      // (first tab of a session): (re)create the snapshot, then serve it.
+      const snapshot = await sessionSnapshot();
       const origin = originOf(sender.url);
-      return { salt: SESSION_SALT, settings: publicSettings(settings),
-        allowlisted: !!origin && allowlist.includes(origin) };
+      return { salt: snapshot.salt, settings: snapshot.settings,
+        allowlisted: !!origin && snapshot.allowlist.includes(origin) };
     })();
   }
 
@@ -296,8 +365,11 @@ api.tabs.onUpdated.addListener((id, info) => {
 });
 
 async function reconcile(persist = false) {
-  try { return await applySettings(await getSettings(), persist); }
-  catch (error) {
+  try {
+    const result = await applySettings(await getSettings(), persist);
+    if (result.ok) await sessionSnapshot();
+    return result;
+  } catch (error) {
     policyStatus = { state: 'error', error: errorText(error), ruleCount: null };
     return { ok: false, error: policyStatus.error };
   }

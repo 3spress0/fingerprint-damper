@@ -33,8 +33,8 @@ const sourceSnapshotAdditions = [
   'wvhba6470p.com', 'ww2.imgadult.com', 'ww2.imgtaxi.com', 'ww2.imgwallet.com', 'y1jxiqds7v.com'
 ];
 
-test('manifest carries the v1.1.0 release branding', () => {
-  assert.equal(manifest.version, '1.1.0');
+test('manifest carries the v1.2.0 release branding', () => {
+  assert.equal(manifest.version, '1.2.0');
 });
 
 test('static ad-network list has a reviewed third-party source snapshot and preserves safety exclusions', () => {

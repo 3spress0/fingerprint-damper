@@ -151,14 +151,23 @@ function setup(options = {}) {
     if (step instanceof Error) throw step;
     if (typeof step === 'function') await step();
   }
+  const sharedSession = options.session || {};
+  let accessLevelCalls = 0;
   const browser = {
     runtime: { id: UI.id, getURL: path => 'moz-extension://unit/' + path,
       onMessage: { addListener: fn => { events.message = fn; } },
       onInstalled: { addListener: fn => { events.installed = fn; } } },
-    storage: { local: {
-      async get(key) { await operation('get', { key }); return { [key]: clone(state[key] ?? {}) }; },
-      async set(value) { await operation('set', value); Object.assign(state, clone(value)); writes.push(clone(value)); }
-    } },
+    storage: {
+      local: {
+        async get(key) { await operation('get', { key }); return { [key]: clone(state[key] ?? {}) }; },
+        async set(value) { await operation('set', value); Object.assign(state, clone(value)); writes.push(clone(value)); }
+      },
+      session: {
+        async get(key) { return { [key]: clone(sharedSession[key]) }; },
+        async set(value) { Object.assign(sharedSession, clone(value)); },
+        async setAccessLevel() { accessLevelCalls++; }
+      }
+    },
     declarativeNetRequest: {
       async getDynamicRules() { await operation('getDynamicRules'); return clone(state.dynamic); },
       async getEnabledRulesets() { await operation('getEnabledRulesets'); return [...state.enabled]; },
@@ -178,11 +187,19 @@ function setup(options = {}) {
       onUpdated: { addListener: fn => { events.updated = fn; } } },
     action: { async setBadgeText() {}, async setBadgeBackgroundColor() {} }
   };
-  const context = vm.createContext({ browser, URL });
+  const context = vm.createContext({
+    browser, URL,
+    // The event page generates its session salt with the platform CSPRNG.
+    crypto: { getRandomValues(bytes) {
+      for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+      return bytes;
+    } }
+  });
   vm.runInContext(core, context);
   vm.runInContext(background, context);
   const send = (msg, sender = UI) => events.message(msg, sender);
   return { state, calls, writes, events, failures, send,
+    session: sharedSession, accessLevelCalls: () => accessLevelCalls,
     ready: () => send({ type: 'popupData' }), settings: patch => send({ type: 'setSettings', settings: patch }) };
 }
 
@@ -302,7 +319,9 @@ test('concurrent enables and emergency off are serialized with no lost updates',
 
 for (const name of ['updateDynamicRules', 'updateEnabledRulesets', 'set']) {
   test(`${name} rejection cannot report a saved lockdown or leave partial policy silently`, async () => {
-    const env = setup();
+    // netBlock starts on so the initial reconcile keeps the static ruleset
+    // enabled and the injected failure happens mid-commit.
+    const env = setup({ settings: { netBlock: true } });
     await env.ready();
     env.failures[name] = [new Error('simulated failure')];
     const result = await env.settings({ ...all, netBlock: false });
@@ -363,4 +382,34 @@ test('failed live notification is reported as a warning after a successful polic
   assert.match(result.warning, /Saved, but live page updates failed/);
   assert.equal(env.state.settings.lockScripts, true);
   assert.equal((await env.ready()).policyStatus.state, 'synced');
+});
+
+test('session salt is one 64-hex value per browser session, shared across event-page restarts', async () => {
+  const session = {};
+  const first = setup({ session });
+  await first.ready();
+  assert.match(first.session.fpdSession.salt, /^[0-9a-f]{64}$/);
+  assert.equal(first.session.fpdSession.settings.netBlock, false, 'snapshot carries the shipped profile');
+  assert.ok(first.accessLevelCalls() >= 1, 'content-script access level is requested');
+  const restarted = setup({ session });
+  await restarted.ready();
+  assert.equal(restarted.session.fpdSession.salt, first.session.fpdSession.salt,
+    'salt survives event-page restarts within a session');
+});
+
+test('session snapshot mirrors settings and allowlist changes before broadcast', async () => {
+  const env = setup({ session: {} });
+  await env.ready();
+  await env.send({ type: 'toggleAllowlist', origin: 'https://snap.test' });
+  assert.ok(env.session.fpdSession.allowlist.includes('https://snap.test'));
+  const salt = env.session.fpdSession.salt;
+  assert.equal((await env.settings({ notify: true })).ok, true);
+  assert.equal(env.session.fpdSession.settings.notify, true);
+  assert.equal(env.session.fpdSession.salt, salt, 'salt unchanged by settings writes');
+  assert.ok(policy.keys.every(key => !Object.hasOwn(env.session.fpdSession.settings, key)),
+    'lockdown keys excluded from the public snapshot');
+  const cfg = await env.send({ type: 'getConfig' }, { ...UI, url: 'https://snap.test/' });
+  assert.equal(cfg.allowlisted, true);
+  assert.equal(cfg.settings.notify, true);
+  assert.equal(cfg.salt, salt);
 });

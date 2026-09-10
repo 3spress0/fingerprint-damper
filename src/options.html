@@ -51,12 +51,13 @@
 </head>
 <body>
   <h1>Fingerprint Damper</h1>
-  <div class="sub">Reload affected pages after changes. HTTP/CSP locks require a fresh load (bypass cache).</div>
+  <div class="sub">API-patch changes apply live to open pages; reload if a page cached earlier values.
+    HTTP/CSP locks require a fresh load (bypass cache).</div>
 
-  <h2>Enabled by default — low breakage risk</h2>
+  <h2>Recommended — on by default</h2>
   <div id="safe"></div>
 
-  <h2>Opt-in — known to break things</h2>
+  <h2>Opt-in / experimental — off by default</h2>
   <div id="risky"></div>
   <div class="warn">
     Timezone and language spoofing can misdate calendars, bookings and delivery
@@ -66,8 +67,8 @@
   </div>
 
   <h2>Paused sites</h2>
-  <p class="d">These origins receive native page APIs after reload. Resuming patches here never changes
-    the ad-network switch or global lockdown rules.</p>
+  <p class="d">API patches are paused live on these origins (hooks stay installed but pass through).
+    Pausing or resuming here never changes the ad-network switch or global lockdown rules.</p>
   <div id="paused-sites" aria-live="polite"></div>
   <button id="resume-all" type="button" hidden>Resume API patches on all sites…</button>
 

@@ -298,43 +298,41 @@
       if (native.notification) equal(Notification.permission, native.notification.get.call(Notification), 'permission state did not turn off');
     });
 
-    await check('Allowlisting restores original methods and constructor descriptors', () => {
+    await check('Pausing passes calls through while hooks stay installed (v1.2 semantics)', () => {
       document.dispatchEvent(new CustomEvent('__fpd_config', { detail: JSON.stringify({ allowlisted: true }) }));
-      assert(Element.prototype.getClientRects === native.elementRects, 'Element method not restored');
-      assert(Range.prototype.getClientRects === native.rangeRects, 'Range method not restored');
-      assert(Intl.NumberFormat === native.intl.NumberFormat, 'Intl constructor not restored');
-      assert(Intl.NumberFormat.prototype.constructor === native.intl.NumberFormat, 'prototype constructor not restored');
-      assert(Number.prototype.toLocaleString === native.number && Date.prototype.toLocaleString === native.date, 'built-in formatting methods not restored');
-      if (native.voices) assert(SpeechSynthesis.prototype.getVoices === native.voices, 'voice method not restored');
-      if (native.devices) assert(MediaDevices.prototype.enumerateDevices === native.devices, 'device method not restored');
-      if (native.battery) assert(navigator.getBattery === native.battery, 'battery method not restored');
-      if (native.batteryValues?.level) assert(Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get === native.batteryValues.level.get,
-        'battery getter not restored');
-      if (native.state) assert(Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get === native.state.get, 'permission getter not restored');
-      if (native.notification) assert(Object.getOwnPropertyDescriptor(Notification, 'permission').get === native.notification.get, 'notification getter not restored');
-      if (native.request) assert(Notification.requestPermission === native.request, 'request method not restored');
-      if (native.hardware?.get) assert(Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get === native.hardware.get,
-        'hardwareConcurrency getter not restored');
-      if (native.deviceMemory?.get) assert(Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get === native.deviceMemory.get,
-        'deviceMemory getter not restored');
+      // Hooks must NOT be uninstalled: every surface stays wrapped.
+      assert(Element.prototype.getClientRects !== native.elementRects, 'Element hook was uninstalled');
+      assert(Range.prototype.getClientRects !== native.rangeRects, 'Range hook was uninstalled');
+      assert(Intl.NumberFormat !== native.intl.NumberFormat, 'Intl constructor hook was uninstalled');
+      assert(Number.prototype.toLocaleString !== native.number && Date.prototype.toLocaleString !== native.date,
+        'locale method hooks were uninstalled');
+      if (native.voices) assert(SpeechSynthesis.prototype.getVoices !== native.voices, 'voice hook was uninstalled');
+      if (native.devices) assert(MediaDevices.prototype.enumerateDevices !== native.devices, 'device hook was uninstalled');
+      if (native.battery) assert(navigator.getBattery !== native.battery, 'battery hook was uninstalled');
+      if (native.request) assert(Notification.requestPermission !== native.request, 'notification request hook was uninstalled');
       if (native.webgl) {
-        assert(WebGLRenderingContext.prototype.getExtension === native.webgl.getExtension, 'WebGL getExtension not restored');
-        assert(WebGLRenderingContext.prototype.getSupportedExtensions === native.webgl.getSupportedExtensions,
-          'WebGL extension list method not restored');
-        assert(WebGLRenderingContext.prototype.readPixels === native.webgl.readPixels, 'WebGL readPixels not restored');
+        assert(WebGLRenderingContext.prototype.getExtension !== native.webgl.getExtension,
+          'WebGL getExtension hook was uninstalled');
+        assert(WebGLRenderingContext.prototype.readPixels !== native.webgl.readPixels,
+          'WebGL readPixels hook was uninstalled');
       }
       if (native.webrtc) {
-        assert(RTCPeerConnection.prototype.setLocalDescription === native.webrtc.setLocalDescription,
-          'WebRTC setLocalDescription not restored');
-        assert(RTCPeerConnection.prototype.createOffer === native.webrtc.createOffer &&
-          RTCPeerConnection.prototype.createAnswer === native.webrtc.createAnswer &&
-          RTCPeerConnection.prototype.getStats === native.webrtc.getStats, 'WebRTC methods not restored');
-        if (native.webrtc.onicecandidate) {
-          assert(Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get === native.webrtc.onicecandidate.get,
-            'WebRTC event handler descriptor not restored');
-        }
+        assert(RTCPeerConnection.prototype.setLocalDescription !== native.webrtc.setLocalDescription,
+          'WebRTC setLocalDescription hook was uninstalled');
       }
-      assert(Math.sin === native.math.sin && Math.pow === native.math.pow, 'Math methods not restored');
+      // Behaviour passes through: settings were turned off in the previous
+      // step, so every read must match the saved native outputs.
+      equal(snapshot(node.getBoundingClientRect()), snapshot(native.elementBounds.call(node)),
+        'paused rects are not native');
+      equal((12345.6).toLocaleString(), native.number.call(12345.6), 'paused locale is not native');
+      equal(Math.sin(1), native.math.sin(1), 'paused Math is not native');
+      // Resuming is a flag flip: the still-installed hooks re-arm in place.
+      document.dispatchEvent(new CustomEvent('__fpd_config', { detail: JSON.stringify({ allowlisted: false }) }));
+      assert(Element.prototype.getClientRects !== native.elementRects, 'hook lost on resume');
+      equal(Math.sin(1), native.math.sin(1), 'Math rounding stays off until opted in again');
+      // Forged pause shapes cannot flip the flag.
+      document.dispatchEvent(new CustomEvent('__fpd_config', { detail: JSON.stringify({ allowlisted: { forged: 1 } }) }));
+      assert(Element.prototype.getClientRects !== native.elementRects, 'forged pause shape was honoured');
     });
     const failed = results.filter(r => r.passed === false).length;
     const skipped = results.filter(r => r.skipped).length;

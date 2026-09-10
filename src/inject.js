@@ -25,8 +25,9 @@
  *      navigator.plugins and maxTouchPoints are deliberately LEFT ALONE:
  *      ad SDKs use "plugins.length === 0" as a headless-bot signal, so
  *      emptying it makes you MORE conspicuous, not less.
- *   4. Everything is restorable. Originals are kept so an allowlisted site
- *      can be handed its real browser back.
+ *   4. Hooks live for the document's lifetime. Pausing a site only raises a
+ *      per-call pass-through flag, so a page-dispatched event can never
+ *      uninstall protection or recover saved native references.
  */
 (() => {
   'use strict';
@@ -38,16 +39,19 @@
   } catch (_) { return; }
 
   // ---------------------------------------------------------------- settings
-  // Protective defaults apply instantly. bridge.js reconciles with the user's
-  // real preferences a few ms later (see README "Timing" for why).
+  // Defaults mirror the shipped profile; bridge.js applies the user's real
+  // settings from the session snapshot a few ms later (cold-start fallback:
+  // a runtime message). Feature-off just means pass-through, so a brief
+  // mismatch window only affects opt-in surfaces.
   const cfg = {
     canvas: true,
     webgl: true,
-    audio: true,
-    geometry: true,
+    audio: false,   // opt-in: touches data returned by getChannelData()
+    geometry: false, // opt-in: affects window chrome measurements
     concurrency: true,
     battery: true,
-    pushGuard: true,
+    notify: false,  // opt-in: block notification permission prompts
+    swBlock: false, // opt-in/experimental: ad service-worker pattern blocks
     clientRects: false, // opt-in: affects positioning, selection, and hit-testing
     timezone: false,   // opt-in: breaks calendars/booking flows
     language: false,   // opt-in: breaks localisation
@@ -61,7 +65,10 @@
 
   let salt = '';
   let active = true;
-  const restore = [];   // [() => void]
+
+  // Keys the page-visible config event may toggle, and the sealed-salt guard.
+  const CONFIG_KEYS = new Set(Object.keys(cfg));
+  let saltSealed = false;
 
   // -------------------------------------------------------------------- rng
   function fnv1a(str) {
@@ -109,7 +116,7 @@
   }
 
   // ------------------------------------------------------------- patch utils
-  function patchMethod(obj, name, factory, restorers = restore) {
+  function patchMethod(obj, name, factory, restorers = null) {
     if (!obj) return;
     let desc;
     try { desc = Object.getOwnPropertyDescriptor(obj, name); } catch (_) { return; }
@@ -129,7 +136,10 @@
 
     try {
       Object.defineProperty(obj, name, { ...desc, value: replacement });
-      restorers.push(() => { try { Object.defineProperty(obj, name, desc); } catch (_) {} });
+      // Restorers are optional: only the experimental Math rounding uses its
+      // own enable/disable cycle. Everything else stays installed for the
+      // document's lifetime (pausing is a per-call pass-through flag).
+      if (restorers) restorers.push(() => { try { Object.defineProperty(obj, name, desc); } catch (_) {} });
     } catch (_) {}
   }
 
@@ -145,7 +155,6 @@
         get: getter,
         set: desc.set || undefined
       });
-      restore.push(() => { try { Object.defineProperty(obj, name, desc); } catch (_) {} });
     } catch (_) {}
   }
 
@@ -158,17 +167,9 @@
     return Object.getOwnPropertyDescriptor(window, name) ? window : null;
   }
 
-  // Native toString cloaking, so `fn.toString()` doesn't scream "patched".
-  (function cloakToString() {
-    const patched = new WeakSet();
-    const origToString = Function.prototype.toString;
-    patchMethod(Function.prototype, 'toString', (orig) => function toString() {
-      if (patched.has(this)) return 'function () { [native code] }';
-      return orig.call(this);
-    });
-    window.__fpdCloak = (fn) => { try { patched.add(fn); } catch (_) {} return fn; };
-    void origToString;
-  })();
+  // v1.2.0: the Function.prototype.toString override and window.__fpdCloak are
+  // intentionally gone. Wrappers look wrapped; native-looking lies added a
+  // page-wide override, a detector global and zero real stealth.
 
   // ============================================================== 1. CANVAS
   // Flip the low bit of a handful of pixels. Imperceptible to humans, fatal to
@@ -489,8 +490,10 @@
   }
 
   // ============================================================== 3. AUDIO
-  // Perturb ~32 samples by ~1e-7. Inaudible; breaks AudioContext hashing.
-  // WeakSet guard stops repeated calls from accumulating drift.
+  // Off by default: getChannelData() returns the buffer's real backing
+  // Float32Array, so this perturbs application data, not just fingerprints.
+  // ~32 samples by ~1e-7; inaudible; breaks AudioContext hashing. WeakSet
+  // guard stops repeated calls from accumulating drift.
   if (window.AudioBuffer) {
     patchMethod(AudioBuffer.prototype, 'getChannelData', (orig) =>
       function getChannelData(channel) {
@@ -625,7 +628,6 @@
               return active && cfg.battery ? value : nativeValue;
             }
           });
-          restore.push(() => { try { Object.defineProperty(BatteryManager.prototype, name, desc); } catch (_) {} });
           patched++;
         } catch (_) {}
       }
@@ -655,16 +657,21 @@
       });
   }
 
-  // ==================================================== 6. PUSH / SW GUARD
+  // ==================================================== 6. NOTIFY / SW GUARD
   // The concrete harm from the y2mate teardown: a fake in-page "Allow
   // notifications" card funnels you into the real prompt, then a service
   // worker is registered for permanent ad delivery.
-  const AD_SW = /(sw-check-permissions|sw\.hid\.js|pushsdk|9hito|rtmark|zdzhk|kbvcd|dulotadtor|abunownon|dawac|\bzoneid=)/i;
-
   if (window.Notification) {
     patchMethod(Notification, 'requestPermission', (orig) =>
       function requestPermission(cb) {
-        if (!(active && cfg.pushGuard)) return orig.apply(this, arguments);
+        if (!(active && cfg.notify)) return orig.apply(this, arguments);
+        // Preserve deliberate user intent: only suppress prompts that do not
+        // follow transient user activation, the ad-SDK ambush pattern.
+        try {
+          if (navigator.userActivation && navigator.userActivation.isActive) {
+            return orig.apply(this, arguments);
+          }
+        } catch (_) {}
         report('notify');
         // "default" (not "denied") - the site is told the user dismissed it,
         // which is the least distinguishable, least sticky answer.
@@ -674,13 +681,23 @@
       });
   }
 
+  // Experimental, off by default. Denylist entries are matched with host
+  // labels and script-path tokens, never raw substring tests against the
+  // whole URL, so an unrelated host or path cannot trip the pattern.
+  const SW_HOST_LABELS = ['9hito', 'rtmark', 'zdzhk', 'kbvcd', 'dulotadtor',
+    'abunownon', 'dawac'];
+  const SW_PATH_TOKEN = /(?:^|\/)(?:sw-check-permissions(?:\.js)?|sw\.hid\.js|pushsdk)(?:$|[?/#])/i;
   if (window.ServiceWorkerContainer) {
     patchMethod(ServiceWorkerContainer.prototype, 'register', (orig) =>
       function register(url) {
-        if (active && cfg.pushGuard) {
+        if (active && cfg.swBlock) {
           try {
-            const u = String(url);
-            if (AD_SW.test(u)) {
+            const parsed = new URL(String(url), location.href);
+            const labels = parsed.hostname.toLowerCase().split('.');
+            const path = parsed.pathname + parsed.search;
+            const hit = SW_HOST_LABELS.some(name => labels.includes(name)) ||
+              SW_PATH_TOKEN.test(path);
+            if (hit) {
               report('swblock');
               return Promise.reject(new DOMException(
                 'Registration blocked by Fingerprint Damper', 'SecurityError'));
@@ -759,7 +776,6 @@
       if (desc && desc.configurable && desc.value === original) {
         try {
           Object.defineProperty(original.prototype, 'constructor', { ...desc, value: Intl[name] });
-          restore.push(() => { try { Object.defineProperty(original.prototype, 'constructor', desc); } catch (_) {} });
         } catch (_) {}
       }
     }
@@ -977,7 +993,6 @@
             onIceHandlers.set(this, { listener, wrapper });
           }
         });
-        restore.push(() => { try { Object.defineProperty(peerPrototype, 'onicecandidate', onIceDesc); } catch (_) {} });
       } catch (_) {}
     }
 
@@ -1081,9 +1096,7 @@
   if (window.Math && window.DataView && window.ArrayBuffer) {
     const bits = new DataView(new ArrayBuffer(8));
     const mathRestorers = [];
-    let retired = false;
     const removeMath = () => { while (mathRestorers.length) mathRestorers.pop()(); };
-    restore.push(() => { retired = true; removeMath(); });
     function roundedMathResult(value) {
       // Preserve native special values, signed zero and integer results.
       if (!Number.isFinite(value) || value === 0 || Number.isInteger(value)) return value;
@@ -1104,10 +1117,11 @@
       return bits.getFloat64(0, false);
     }
 
-    // Leave native Math identities/JIT intrinsics alone while the option is off.
-    // Once allowlisting restores the whole page, wait for reload like other hooks.
+    // Leave native Math identities/JIT intrinsics alone while the option is
+    // off or the site is paused; Math is the one surface that uses its own
+    // install/remove cycle instead of the pass-through flag.
     updateMathRounding = () => {
-      if (retired || !(active && cfg.mathRounding)) { removeMath(); return; }
+      if (!(active && cfg.mathRounding)) { removeMath(); return; }
       if (mathRestorers.length) return;
       for (const name of ['acos', 'acosh', 'asin', 'asinh', 'atan', 'atanh', 'atan2',
                           'cos', 'cosh', 'exp', 'expm1', 'log', 'log1p', 'log2', 'log10',
@@ -1116,7 +1130,7 @@
         patchMethod(Math, name, (orig) => new Proxy(orig, {
           apply(target, receiver, args) {
             const value = Reflect.apply(target, receiver, args); // coerce inputs once
-            if (retired || !(active && cfg.mathRounding)) return value;
+            if (!(active && cfg.mathRounding)) return value;
             const rounded = roundedMathResult(value);
             if (!Object.is(rounded, value)) report('mathRounding');
             return rounded;
@@ -1127,17 +1141,32 @@
   }
 
   // ==================================================== control channel
+  // Hardened listener. The MAIN world cannot authenticate this event (its
+  // whole scope is page-visible), so it accepts only:
+  //   - the SALT once (first delivery seals it; later values are ignored,
+  //     so a page cannot rotate or reset the per-session persona seed),
+  //   - known boolean settings (anything else is rejected, never merged),
+  //   - `allowlisted` as a pass-through FLAG only. Hooks are never removed,
+  //     so no page-dispatched event can restore saved native references.
   document.addEventListener('__fpd_config', (ev) => {
     let msg;
     try { msg = JSON.parse(ev.detail); } catch (_) { return; }
-    if (msg.salt != null) salt = String(msg.salt);
-    if (msg.settings) Object.assign(cfg, msg.settings);
-    if (msg.allowlisted === true && active) {
-      active = false;
-      while (restore.length) restore.pop()();
-    } else if (msg.allowlisted === false) {
-      active = true;
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
+
+    if (!saltSealed && typeof msg.salt === 'string' && msg.salt.length > 0 && msg.salt.length <= 256) {
+      salt = msg.salt;
+      saltSealed = true;
     }
+
+    if (msg.settings && typeof msg.settings === 'object' && !Array.isArray(msg.settings)) {
+      for (const [key, value] of Object.entries(msg.settings)) {
+        if (CONFIG_KEYS.has(key) && typeof value === 'boolean') cfg[key] = value;
+      }
+    }
+
+    if (msg.allowlisted === true) active = false;
+    else if (msg.allowlisted === false) active = true;
+
     updateMathRounding();
   });
 

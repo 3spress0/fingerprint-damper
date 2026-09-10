@@ -12,28 +12,32 @@
 
 const api = typeof browser !== 'undefined' ? browser : chrome;
 
+// On by default: fingerprint damping with a low breakage profile.
 const SAFE = [
   ['canvas', 'Canvas noise',
    'Adds small pixel and measureText() noise to main-thread canvases, including OffscreenCanvas. Changes exact hashes; does not hide installed fonts.'],
   ['webgl', 'Dampen WebGL identity / readback',
    'Masks vendor, renderer and version fields, hides WEBGL_debug_renderer_info, and stably changes standard RGBA/UNSIGNED_BYTE readPixels() output. Other WebGL capability and shader surfaces remain native.'],
-  ['audio', 'Audio noise',
-   'Perturbs ~32 samples by 1e-7. Inaudible; defeats AudioContext hashing.'],
-  ['geometry', 'Normalise window geometry',
-   'Zeroes window position, reports outer size as inner size, flattens colour depth. Screen resolution is left real so responsive layouts still work.'],
   ['concurrency', 'Normalise hardware capacity',
    'Reports 8 CPU cores and, only where the browser already exposes it, 8 GB deviceMemory. It does not add APIs or patch worker navigators.'],
   ['battery', 'Neutralise Battery API',
    'Reports full and charging while retaining the native BatteryManager shell where available. Battery level is a strong short-term cross-site correlator.'],
-  ['pushGuard', 'Block push-ad funnels',
-   'Silently dismisses notification permission requests and blocks known ad service workers.'],
-  ['netBlock', 'Block known ad / push networks',
-   'Network-level block for 78 teardown and public-list ad/push domains. The expanded source-derived entries apply only to third-party requests; this is still narrower than a full ad blocker.'],
   ['stats', 'Count activity for the popup',
    'Slightly increases detectability, since it needs a page-visible event channel. Turn off for a quieter profile.']
 ];
 
+// Off by default: touches application data, prompts, workers or the network.
 const RISKY = [
+  ['audio', 'Audio noise',
+   'Perturbs ~32 samples by 1e-7 in AudioBuffer.getChannelData() results. That array is the buffer\'s real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing.'],
+  ['geometry', 'Normalise window geometry',
+   'Zeroes window position, reports outer size as inner size, flattens colour depth. Screen resolution is left real so responsive layouts still work.'],
+  ['notify', 'Block notification permission prompts',
+   'Requests that do not follow a deliberate click resolve "default" (no dialog), as if the user dismissed the prompt. Requests made right after a click still prompt normally.'],
+  ['swBlock', 'Block ad service workers (experimental)',
+   'Rejects service-worker registrations whose host labels or script path match known ad-SDK patterns. Off by default: pattern matching can hit unrelated apps; use the per-site pause as a bypass.'],
+  ['netBlock', 'Block known ad / push networks',
+   'Network-level block for 78 teardown and public-list ad/push domains. The expanded source-derived entries apply only to third-party requests; this is still narrower than a full ad blocker.'],
   ['speechVoices', 'Hide speech voice list',
    'getVoices() returns an empty list. Default speech remains native, but voice pickers and some accessibility features may stop working.'],
   ['mediaDevices', 'Hide media device list',
@@ -156,7 +160,7 @@ async function save(patch) {
     saved = true;
     await load();
     if (result.warning) document.getElementById('save-error').textContent = result.warning;
-    showSaved('Saved — reload affected pages');
+    showSaved('Saved — new pages and live hooks are updated; reload if a page cached results');
   } catch (error) {
     try { await load(); } catch (_) { /* Retain the explicit failure below. */ }
     document.getElementById('save-error').textContent = (saved ? 'Saved, but UI refresh failed: ' : 'Not saved: ') + error.message;
@@ -175,7 +179,7 @@ async function changePausedSites(type, origin) {
     saved = true;
     await load();
     if (result.warning) document.getElementById('save-error').textContent = result.warning;
-    showSaved('API patches resumed — reload affected tabs');
+    showSaved('Pause/resume applied to open pages; reload only if a page cached earlier values');
   } catch (error) {
     try { await load(); } catch (_) { /* Retain the explicit failure below. */ }
     document.getElementById('save-error').textContent = (saved ? 'Saved, but UI refresh failed: ' : 'Not saved: ') + error.message;
@@ -193,7 +197,7 @@ document.getElementById('lock-max').addEventListener('click', () => {
 document.getElementById('lock-off').addEventListener('click', () => save({ ...FPDLockdown.defaults }));
 document.getElementById('resume-all').addEventListener('click', () => {
   if (busy || !pausedOrigins.length || !window.confirm('Resume API patches on every paused site? '
-    + 'Global ad-network and lockdown rules will stay unchanged. Reload affected tabs afterward.')) return;
+    + 'Global ad-network and lockdown rules will stay unchanged.')) return;
   return changePausedSites('clearAllowlist');
 });
 load().catch(error => { document.getElementById('save-error').textContent = error.message; });

@@ -90,7 +90,7 @@ test('options lists paused origins and resumes one without changing global setti
   assert.equal(env.state.data.settings.lockScripts, true);
   assert.equal(env.state.data.settings.canvas, false);
   assert.ok(env.state.messages.some(msg => msg.type === 'removeAllowlist' && msg.origin === 'https://first.test'));
-  assert.match(env.nodes.saved.textContent, /API patches resumed.*reload affected tabs/);
+  assert.match(env.nodes.saved.textContent, /Pause.resume applied to open pages/);
   assert.equal(env.nodes.saved.classList.contains('show'), true);
 });
 

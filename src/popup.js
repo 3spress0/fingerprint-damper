@@ -80,8 +80,8 @@ document.getElementById('allow').addEventListener('click', () => action(async ()
   if (!current || !current.origin) return;
   const result = await api.runtime.sendMessage({ type: 'toggleAllowlist', origin: current.origin });
   if (!result || !result.ok) throw new Error(result && result.error || 'Pause failed.');
-  const tabs = await api.tabs.query({ active: true, currentWindow: true });
-  if (tabs[0]) await api.tabs.reload(tabs[0].id);
+  // v1.2.0: pause/resume is a pass-through flag applied live to open pages;
+  // no reload is forced anymore. A reload only helps if a page cached values.
   window.close();
 }));
 document.getElementById('lock-off').addEventListener('click', () => action(async () => {

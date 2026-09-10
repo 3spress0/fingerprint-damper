@@ -513,16 +513,24 @@ test('permission change events and listener removal stay native while their stat
   })()`), true);
 });
 
-test('notification requests obey pushGuard independently of passive permission masking', async () => {
+test('notification requests obey notify (activation-gated) independently of passive permission masking', async () => {
   const env = setup();
-  assert.equal(await env.evaluate("Notification.requestPermission().then(value => value === 'default' && Notification.requests === 0)"), true);
-  env.configure({ settings: { pushGuard: false, permissionStates: true } });
+  // notify is off by default since v1.2.0: requests stay native.
+  assert.equal(await env.evaluate("Notification.requestPermission().then(value => value === 'granted' && Notification.requests === 1)"), true);
+  env.configure({ settings: { notify: true, permissionStates: true } });
+  // Unsolicited requests resolve "default" without a dialog and without
+  // reaching the native prompt implementation.
+  assert.equal(await env.evaluate("Notification.requestPermission().then(value => value === 'default' && Notification.requests === 1)"), true);
+  // Requests following transient user activation still prompt natively.
+  env.evaluate('navigator.userActivation = { isActive: true };');
   assert.equal(await env.evaluate(`(async () => {
     let callbackValue;
     const result = await Notification.requestPermission(value => { callbackValue = value; });
-    return result === 'granted' && callbackValue === 'granted' && Notification.requests === 1 &&
+    return result === 'granted' && callbackValue === 'granted' && Notification.requests === 2 &&
       Notification.permission === 'default';
   })()`), true);
+  env.configure({ settings: { notify: false, permissionStates: true } });
+  assert.equal(await env.evaluate("Notification.requestPermission().then(value => value === 'granted')"), true);
 });
 
 test('Math rounding is stable and bounded across all covered functions', () => {
@@ -627,31 +635,59 @@ test('new activity counts contain counts only and respect the stats setting', as
   assert.deepEqual(env.stats(), { speechVoices: 1, mediaDevices: 1, permissionStates: 2, mathRounding: 1 });
 });
 
-test('allowlisting restores all new methods, descriptors and native Math behavior', async () => {
+test('pausing passes every surface through while hooks stay installed; resuming re-arms in place', async () => {
   const env = setup();
-  env.configure({ settings: { speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true, webrtc: true } });
-  env.evaluate('globalThis.savedSin = Math.sin;');
+  env.configure({ settings: { speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true, webrtc: true, notify: true } });
+  env.evaluate(`globalThis.saved = {
+    voices: SpeechSynthesis.prototype.getVoices, devices: MediaDevices.prototype.enumerateDevices,
+    battery: Navigator.prototype.getBattery,
+    level: Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get,
+    state: Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get,
+    notification: Object.getOwnPropertyDescriptor(Notification, 'permission').get,
+    request: Notification.requestPermission,
+    hardware: Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get,
+    memory: Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get,
+    sld: RTCPeerConnection.prototype.setLocalDescription, offer: RTCPeerConnection.prototype.createOffer,
+    answer: RTCPeerConnection.prototype.createAnswer, stats: RTCPeerConnection.prototype.getStats,
+    onice: Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get,
+    listen: EventTarget.prototype.addEventListener, unlisten: EventTarget.prototype.removeEventListener
+  };`);
   env.configure({ allowlisted: true });
-  assert.equal(await env.evaluate(`(async () =>
-    SpeechSynthesis.prototype.getVoices === native.voices && MediaDevices.prototype.enumerateDevices === native.devices &&
-    Navigator.prototype.getBattery === native.battery &&
-    Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get === native.batteryValues.level.get &&
-    Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get === native.state.get &&
-    Object.getOwnPropertyDescriptor(Notification, 'permission').get === native.notification.get &&
-    Notification.requestPermission === native.request &&
-    Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get === native.hardware.get &&
-    Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get === native.memory.get &&
-    RTCPeerConnection.prototype.setLocalDescription === native.rtc.setLocalDescription &&
-    RTCPeerConnection.prototype.createOffer === native.rtc.createOffer &&
-    RTCPeerConnection.prototype.createAnswer === native.rtc.createAnswer &&
-    RTCPeerConnection.prototype.getStats === native.rtc.getStats &&
-    Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get === native.rtc.onicecandidate.get &&
-    EventTarget.prototype.addEventListener === native.rtc.addEventListener &&
-    EventTarget.prototype.removeEventListener === native.rtc.removeEventListener &&
-    Math.sin === native.math.sin && savedSin(1) === native.math.sin(1) &&
-    (await navigator.mediaDevices.enumerateDevices()).length === 3
-  )()`), true);
+  assert.equal(await env.evaluate(`(async () => {
+    const kept = saved.voices === SpeechSynthesis.prototype.getVoices && saved.devices === MediaDevices.prototype.enumerateDevices &&
+      saved.battery === Navigator.prototype.getBattery &&
+      saved.level === Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get &&
+      saved.state === Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get &&
+      saved.notification === Object.getOwnPropertyDescriptor(Notification, 'permission').get &&
+      saved.request === Notification.requestPermission &&
+      saved.hardware === Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get &&
+      saved.memory === Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get &&
+      saved.sld === RTCPeerConnection.prototype.setLocalDescription && saved.offer === RTCPeerConnection.prototype.createOffer &&
+      saved.answer === RTCPeerConnection.prototype.createAnswer && saved.stats === RTCPeerConnection.prototype.getStats &&
+      saved.onice === Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get &&
+      saved.listen === EventTarget.prototype.addEventListener && saved.unlisten === EventTarget.prototype.removeEventListener;
+    const unrestored = saved.voices !== native.voices && saved.devices !== native.devices &&
+      saved.battery !== native.battery && saved.state !== native.state.get &&
+      saved.notification !== native.notification.get && saved.request !== native.request &&
+      saved.sld !== native.rtc.setLocalDescription && saved.listen !== native.rtc.addEventListener;
+    const nativeBehavior =
+      speechSynthesis.getVoices() === speechSynthesis.voices &&
+      (await navigator.mediaDevices.enumerateDevices()) === navigator.mediaDevices.devices &&
+      (await navigator.getBattery()) === navigator.battery &&
+      navigator.permissions.statuses.geolocation.state === 'granted' &&
+      Notification.permission === 'granted' &&
+      navigator.hardwareConcurrency === 12 && navigator.deviceMemory === 16 &&
+      Math.sin === native.math.sin && Math.sin(1) === native.math.sin(1) &&
+      (await Notification.requestPermission()) === 'granted';
+    return kept && unrestored && nativeBehavior;
+  })()`), true, 'paused: hooks installed but every read and request is native');
   env.configure({ allowlisted: false });
-  assert.equal(env.evaluate('Math.sin === native.math.sin && savedSin(1) === native.math.sin(1)'), true,
-    'after full restoration, reload is required to install hooks again');
+  assert.equal(await env.evaluate(`(async () =>
+    saved.voices === SpeechSynthesis.prototype.getVoices &&
+    saved.battery === Navigator.prototype.getBattery && saved.request === Notification.requestPermission &&
+    Math.sin !== native.math.sin && Math.sin(1) !== native.math.sin(1) &&
+    speechSynthesis.getVoices().length === 0 &&
+    (await navigator.mediaDevices.enumerateDevices()).length === 0 &&
+    (await Notification.requestPermission()) === 'default'
+  )()`), true, 'resume re-arms the still-installed hooks in place');
 });

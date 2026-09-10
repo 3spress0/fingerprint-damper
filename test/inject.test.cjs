@@ -285,7 +285,7 @@ for (const ctor of ['HTMLCanvasElement', 'OffscreenCanvas']) {
   });
 }
 
-test('text jitter is consistent across canvas types and rotates with origin, day, and salt', () => {
+test('text jitter is consistent across canvas types, rotates with origin and day, and seals its salt', () => {
   const width = (env, ctor = 'HTMLCanvasElement') => new env[ctor]().getContext('2d').measureText('probe').width;
   const env = setup();
   const baseline = width(env);
@@ -293,8 +293,10 @@ test('text jitter is consistent across canvas types and rotates with origin, day
   assert.equal(width(setup()), baseline);
   assert.notEqual(width(setup({ origin: 'https://two.example' })), baseline);
   assert.notEqual(width(setup({ day: '2026-09-06' })), baseline);
+  // The first delivered salt is sealed: a later page-dispatched event cannot
+  // rotate the persona mid-document.
   env.configure({ salt: 'another-session' });
-  assert.notEqual(width(env), baseline);
+  assert.equal(width(env), baseline, 'salt cannot be rotated after first delivery');
 });
 
 test('unsupported optional text metric fields are left absent', () => {
@@ -373,6 +375,7 @@ test('convertToBlob skips canvases over four megapixels', async () => {
 for (const prototypeGeometry of [false, true]) {
   test(`geometry restores native values when off (window ${prototypeGeometry ? 'prototype' : 'instance'})`, () => {
     const env = setup({ prototypeGeometry });
+    env.configure({ settings: { geometry: true } });   // opt-in since v1.2.0
     const protectedValues = { availWidth: 1920, availHeight: 1080, availLeft: 0,
                               availTop: 0, colorDepth: 24, pixelDepth: 24 };
     const screenValues = () => Object.fromEntries(Object.keys(env.screen.real).map((p) => [p, env.screen[p]]));
@@ -452,27 +455,48 @@ test('WebGL hides debug renderer metadata and applies stable noise only to stand
   assert.throws(() => gl.readPixels(1, 2, 4, 2, 0x1908, 0x1401, native), error => error === gl.readError);
 });
 
-test('allowlisting restores the original canvas methods and geometry descriptors', async () => {
+test('pausing passes calls through while hooks stay installed (canvas, geometry, WebGL)', async () => {
   const env = setup();
+  env.configure({ settings: { geometry: true } });
   const canvas = new env.OffscreenCanvas();
   const ctx = canvas.getContext('2d');
+  const protectedText = ctx.measureText('probe').width;
+  assert.notEqual(protectedText, METRICS.width);
+  const wrappedMeasure = ctx.measureText;
+  const wrappedAvail = Object.getOwnPropertyDescriptor(env.Screen.prototype, 'availWidth').get;
+  const wrappedScreenX = Object.getOwnPropertyDescriptor(env.host, 'screenX').get;
+  const wrappedExtension = env.WebGLRenderingContext.prototype.getExtension;
+  const wrappedSupported = env.WebGLRenderingContext.prototype.getSupportedExtensions;
+  const wrappedReadPixels = env.WebGLRenderingContext.prototype.readPixels;
+
   env.configure({ allowlisted: true });
-  assert.equal(env.CanvasRenderingContext2D.prototype.measureText, env.originals.measureText);
-  assert.equal(ctx.measureText, env.originals.offscreenMeasureText);
-  assert.equal(ctx.getImageData, env.originals.getImageData);
-  assert.equal(canvas.convertToBlob, env.originals.convertToBlob);
-  assert.equal(Object.getOwnPropertyDescriptor(env.Screen.prototype, 'availWidth').get, env.originals.availWidth);
-  assert.equal(Object.getOwnPropertyDescriptor(env.host, 'screenX').get, env.originals.screenX);
+  // Hooks stay installed: identical wrapper objects, no native restoration.
+  assert.equal(ctx.measureText, wrappedMeasure);
+  assert.notEqual(ctx.measureText, env.originals.offscreenMeasureText);
+  assert.equal(Object.getOwnPropertyDescriptor(env.Screen.prototype, 'availWidth').get, wrappedAvail);
+  assert.equal(Object.getOwnPropertyDescriptor(env.host, 'screenX').get, wrappedScreenX);
+  assert.equal(env.WebGLRenderingContext.prototype.getExtension, wrappedExtension);
+  assert.equal(env.WebGLRenderingContext.prototype.getSupportedExtensions, wrappedSupported);
+  assert.equal(env.WebGLRenderingContext.prototype.readPixels, wrappedReadPixels);
+  // ... but every call passes through to native while paused.
   assert.equal(ctx.measureText('probe').width, METRICS.width);
-  assert.deepEqual((await canvas.convertToBlob()).data, canvas.pixels);
+  assert.equal(wrappedAvail.call(env.screen), env.screen.real.availWidth);
+  const blob = await canvas.convertToBlob();
+  assert.equal(blob.canvas, canvas);
+  assert.deepEqual(blob.data, canvas.pixels);
   assert.equal(new env.WebGL2RenderingContext().getParameter(0x1f02), 'WebGL 2.0 native');
-  assert.equal(env.WebGLRenderingContext.prototype.getExtension, env.originals.webglGetExtension);
-  assert.equal(env.WebGLRenderingContext.prototype.getSupportedExtensions, env.originals.webglSupportedExtensions);
-  assert.equal(env.WebGLRenderingContext.prototype.readPixels, env.originals.webglReadPixels);
+  // A page-dispatched "paused" event cannot recover saved native references...
+  assert.notEqual(ctx.measureText, env.originals.offscreenMeasureText);
+  assert.notEqual(wrappedExtension, env.originals.webglGetExtension);
+  // ... and resuming re-arms the same hooks in place (same stable persona).
+  env.configure({ allowlisted: false });
+  assert.equal(ctx.measureText('probe').width, protectedText);
+  assert.equal(new env.WebGL2RenderingContext().getParameter(0x1f02), 'WebGL 2.0');
 });
 
 test('missing OffscreenCanvas support does not prevent the other patches from installing', () => {
   const env = setup({ offscreen: false });
+  env.configure({ settings: { geometry: true } });   // opt-in since v1.2.0
   assert.notEqual(new env.HTMLCanvasElement().getContext('2d').measureText('probe').width, METRICS.width);
   assert.equal(new env.WebGL2RenderingContext().getParameter(0x1f02), 'WebGL 2.0');
   assert.equal(env.screen.availWidth, env.screen.width);
@@ -553,8 +577,8 @@ test('rect seeds rotate with origin, day and session salt', () => {
   assert.deepEqual(bounds(setup()), first);
   assert.notDeepEqual(bounds(setup({ origin: 'https://two.example' })), first);
   assert.notDeepEqual(bounds(setup({ day: '2026-09-06' })), first);
-  env.configure({ salt: 'new-session' });
-  assert.notDeepEqual(bounds(env), first);
+  env.configure({ salt: 'new-session' });   // ignored: salt already sealed
+  assert.deepEqual(bounds(env), first, 'rect seeds keep a sealed salt');
 });
 
 test('native Intl defaults are untouched until opted in', () => {
@@ -730,23 +754,61 @@ test('locale wrappers preserve invalid-input errors, native brand checks and coe
   })()`), true);
 });
 
-test('allowlisting restores rect methods, Intl constructors, prototype references and locale methods', () => {
+test('pausing passes rect/Intl/locale surfaces through while hooks stay installed (live resume)', () => {
   const env = setup();
+  const values = () => env.evaluate(`JSON.stringify({
+    nf: new Intl.NumberFormat().resolvedOptions().locale,
+    num: Number.prototype.toLocaleString.call(12345.6),
+    date: new Date('2026-09-05T23:30:00Z').toLocaleString(),
+    bounds: new Element().getBoundingClientRect().toJSON(),
+    rects: new Range().getClientRects().item(0).toJSON()
+  })`);
+  // All these surfaces are opt-in and off by default since v1.2.0.
+  const nativeValues = values();
   env.configure({ settings: { clientRects: true, language: true, timezone: true } });
+  const protectedValues = values();
+  assert.notEqual(protectedValues, nativeValues);
+  env.evaluate(`globalThis.wrapped = {
+    nf: Intl.NumberFormat, num: Number.prototype.toLocaleString,
+    bounds: Element.prototype.getBoundingClientRect, rects: Range.prototype.getClientRects
+  };`);
   env.configure({ allowlisted: true });
-  assert.equal(env.Element.prototype.getBoundingClientRect, env.originals.elementBounds);
-  assert.equal(env.Element.prototype.getClientRects, env.originals.elementRects);
-  assert.equal(env.Range.prototype.getBoundingClientRect, env.originals.rangeBounds);
-  assert.equal(env.Range.prototype.getClientRects, env.originals.rangeRects);
-  assert.equal(env.evaluate(`
-    Intl.NumberFormat === nativeIntl.NumberFormat && Intl.DateTimeFormat === nativeIntl.DateTimeFormat &&
-    Intl.Collator === nativeIntl.Collator && Intl.NumberFormat.prototype.constructor === nativeIntl.NumberFormat &&
-    Intl.DateTimeFormat.prototype.constructor === nativeIntl.DateTimeFormat &&
-    Number.prototype.toLocaleString === nativeLocaleMethods.number &&
-    Date.prototype.toLocaleString === nativeLocaleMethods.date &&
-    String.prototype.localeCompare === nativeLocaleMethods.compare &&
-    String.prototype.toLocaleUpperCase === nativeLocaleMethods.upper
-  `), true);
+  assert.equal(env.evaluate(`(() =>
+    wrapped.nf === Intl.NumberFormat && wrapped.num === Number.prototype.toLocaleString &&
+    wrapped.bounds === Element.prototype.getBoundingClientRect && wrapped.rects === Range.prototype.getClientRects &&
+    wrapped.nf !== nativeIntl.NumberFormat && wrapped.num !== nativeLocaleMethods.number
+  )()`), true, 'hooks stay installed while paused (no native restoration)');
+  assert.equal(values(), nativeValues, 'paused calls produce native outputs');
+  env.configure({ allowlisted: false });
+  assert.equal(values(), protectedValues, 'resume re-arms the same deterministic persona without a reload');
+});
+
+test('hardened config channel rejects unknown keys, wrong types and forged salt', () => {
+  const env = setup();
+  const width = () => new env.HTMLCanvasElement().getContext('2d').measureText('probe').width;
+  const baseline = width();
+  const dispatch = (detail) => env.document.dispatchEvent(new CustomEvent('__fpd_config', { detail }));
+  // Non-object / malformed payloads are ignored outright.
+  for (const raw of ['{broken', 'null', '[]', '"text"', '42', '{}']) dispatch(raw);
+  assert.equal(width(), baseline);
+  // A forged salt cannot rotate the sealed persona...
+  env.configure({ salt: 'forged-salt' });
+  assert.equal(width(), baseline);
+  // ...unknown settings keys and non-boolean values are rejected...
+  env.configure({ settings: { bogus: true } });
+  env.configure({ settings: { canvas: 'yes', webgl: 1 } });
+  assert.equal(width(), baseline);
+  // ...while valid boolean settings still apply.
+  env.configure({ settings: { canvas: false } });
+  assert.equal(width(), METRICS.width, 'valid boolean settings still apply');
+  // Malformed pause shapes cannot toggle the flag; real ones do.
+  dispatch(JSON.stringify({ allowlisted: { weird: 1 } }));
+  assert.equal(width(), METRICS.width, 'non-boolean pause shape is ignored');
+  env.configure({ settings: { canvas: true } });
+  env.configure({ allowlisted: false });
+  assert.equal(width(), baseline, 'flag-based resume re-arms the sealed persona');
+  env.configure({ allowlisted: true });
+  assert.equal(width(), METRICS.width, 'pausing is a pure flag: native passthrough');
 });
 
 test('experimental Math rounding does not change canvas/rect noise or locale formatting', () => {

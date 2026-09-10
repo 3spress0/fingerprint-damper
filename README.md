@@ -29,8 +29,14 @@ deobfuscated PropellerAds SDK was found reading GPU model, battery level, screen
 timezone and window position through ordinary DOM calls — none of which an ad blocker can prevent
 once the script has loaded. This extension targets exactly those surfaces.
 
-**v1.1.0 status:** `web-ext lint` → 0 errors, 0 warnings, 0 notices. Packaged zip lives in
-`package/` (filename tracks `manifest.json`'s version).
+**v1.2.0 status:** hardening release. Hardened page/extension config channel (schema-validated,
+salt sealed, pause is a pass-through flag — hooks are never uninstalled by page events),
+cryptographic per-browser-session salt stored in `storage.session`, snapshot bootstrap at
+`document_start` (no defaults flicker), safer defaults (audio, geometry, notification blocking,
+service-worker blocking and network blocking are now opt-in), and deterministic packaging
+(`./package.sh`, gated by `scripts/amocheck.sh`). Run `node --test test/*.test.cjs` —
+106/106 tests pass. The packaged XPI lives at the repo root (filename tracks `manifest.json`'s
+version; `*.xpi` is git-ignored).
 
 ---
 
@@ -97,24 +103,22 @@ Even the default protections can affect some sites; the per-site pause is the es
 |---|---|
 | Canvas / text metric noise | Up to 32 RGB low-bit flips on pixel readback/serialization (max channel delta 1/255), including main-thread `OffscreenCanvas`. The noise step is O(32); serialization needs a copy and skips canvases over 4 MP. `measureText()` fields get stable <0.01px jitter. This changes exact hashes, not reliable font-availability tests. |
 | WebGL identity / readback | Vendor, renderer and matching version strings → `Mozilla` / `WebGL 1.0` or `2.0`; `WEBGL_debug_renderer_info` is hidden. Standard RGBA/UNSIGNED_BYTE `readPixels()` receives stable, low-bit RGB noise. Other WebGL capabilities, shader behavior, non-byte formats and PBO readback remain native. |
-| Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. Inaudible. A `WeakSet` prevents repeated reads from accumulating drift. |
-| Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. |
 | Hardware capacity | `hardwareConcurrency` → 8 and, only if the browser already exposes it, `deviceMemory` → 8. No API is invented; worker navigators remain native. |
 | Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell when its getters are patchable; native failures remain failures. Level plus discharge time is a startlingly good short-term cross-site correlator. |
-| Push guard | `Notification.requestPermission()` resolves `"default"` with **no dialog**; service workers matching known ad patterns are refused. |
-| Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). The 64 newly added source-derived domains apply only to third-party requests. See [source notice and pinned snapshot](rules/NOTICE.md). |
 
-Note `requestPermission` returns `"default"`, not `"denied"`. "Denied" is a sticky, distinguishable
-state; "default" reads as *the user dismissed it*, which is both commonplace and unremarkable.
-
-Also note the blocklist **excludes `etacloud.org` and `tubeapi.org`** — those are the actual
-conversion backend. Blocking them would break the site's real function. The ad layer is cut; the
-feature keeps working. That's the "doesn't hurt UX" line.
+Everything else in this extension is opt-in (below). Since v1.2.0 the shipped profile only
+includes fingerprint damping with a low breakage risk; controls that touch application data,
+prompts, workers or the network must be switched on explicitly.
 
 ### Opt-in (off by default)
 
 | Protection | Behaviour and trade-off |
 |---|---|
+| Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. That array is the buffer's real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing. Off by default for that reason. |
+| Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. Off by default. |
+| Block notification permission prompts | `Notification.requestPermission()` resolves `"default"` with **no dialog** — but only for requests that do not follow transient user activation; requests made right after a deliberate click still prompt normally. `"default"` reads as *the user dismissed it*, which is commonplace and unremarkable. Off by default. |
+| Block ad service workers (experimental) | Rejects service-worker registrations whose host labels or script path match known ad-SDK patterns. Boundary-aware matching (host labels / path tokens), never raw substring tests. Off by default; pattern matching can hit unrelated apps — use the per-site pause as a bypass. |
+| Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). The 64 newly added source-derived domains apply only to third-party requests. See [source notice and pinned snapshot](rules/NOTICE.md). Off by default since v1.2.0. The blocklist **excludes `etacloud.org` and `tubeapi.org`** — those are the actual conversion backend in the y2mate teardown. |
 | Hide speech voice list | `getVoices()` returns an empty array. Native default speech remains available, but voice pickers and some accessibility flows may break. No fake voices are created. |
 | Hide media device list | Successful `enumerateDevices()` calls return an empty array, hiding enumerated labels, counts and IDs. Native errors and capture APIs remain unchanged. Camera/microphone/speaker pickers may break; this does **not** block capture. |
 | Mask passive permission states | Native `PermissionStatus.state` reads report `prompt`; `Notification.permission` reports `default`. Real grants, explicit request results, query support/errors and events stay native. Sites may show redundant permission UI or disable features. |
@@ -170,19 +174,22 @@ Not signed, so pick one:
 3. Select `manifest.json` in this folder.
 
 **Permanent:** requires Firefox Developer Edition, Nightly, or ESR. Set
-`xpinstall.signatures.required` to `false` in `about:config`, then install the zip in `package/`
-matching `manifest.json`'s version, from `about:addons` → gear → *Install Add-on From File*.
+`xpinstall.signatures.required` to `false` in `about:config`, then install the `.xpi` at the repo
+root matching `manifest.json`'s version, from `about:addons` → gear → *Install Add-on From File*.
 Release Firefox enforces signing with no override; for that you'd need to submit it to AMO
 (self-distribution signing is free and doesn't require public listing).
 
 Requires **Firefox 142+** (`world: "MAIN"` content scripts landed in 128;
 `data_collection_permissions` in 140; Android parity in 142).
 
-### Build a local zip
+### Build the XPI
 
-From the repository root, run `npx web-ext build` (or an installed `web-ext build`).
-`web-ext-config.cjs` writes the versioned archive to ignored `package/` and excludes the Node/browser
-test artifacts from the installable zip.
+From the repository root, run `./package.sh`. It stages exactly the shipped file set
+(`manifest.json`, `src/`, `rules/`, `icons/`, `LICENSE`), runs the AMO-sensitive pattern gate
+(`scripts/amocheck.sh`), and writes `fingerprint-damper-<version>.xpi` next to the manifest.
+No transpilation, bundling, minification or code generation: the packaged files are the source
+files. `./package.sh --check` additionally runs `npx web-ext lint` first. For a quick local
+reload, `npx web-ext run` still works via `web-ext-config.cjs`.
 
 ---
 
@@ -216,10 +223,11 @@ A file-based or JS-driven self-test cannot prove that scripts were blocked befor
 ## Using it
 
 Toolbar badge shows how many fingerprint reads were intercepted on the current page. Click for a
-breakdown and a **Pause API patches on this site** button (per-origin, persists, reloads the tab).
-The badge counts page API reports, not DNR/network blocks. Settings also has a **Paused sites** list:
-resume one origin, or confirm **Resume API patches on all sites**, without needing to revisit a broken
-page. Reload tabs after resuming so their page-world hooks are installed again.
+breakdown and a **Pause API patches on this site** button (per-origin, persists). Since v1.2.0,
+pausing and resuming apply **live** to open pages: hooks stay installed and simply pass through to
+native behaviour while paused — no tab reload is forced. A reload only helps if a page cached
+earlier values. The badge counts page API reports, not DNR/network blocks. Settings also has a
+**Paused sites** list: resume one origin, or confirm **Resume API patches on all sites**.
 
 API pause never disables the global ad-network switch or global lockdown. The Paused sites controls
 only change that per-origin API list; they do not make global network/CSP rules permissive. If
@@ -231,17 +239,25 @@ than claiming success.
 
 ## Honest limitations
 
-- **Startup race.** The page-world script can't read `browser.storage`, so it applies protective
-  defaults at `document_start` and reconciles with your settings asynchronously via `bridge.js`.
-  An allowlisted site can briefly see protective defaults before restoration; an opt-in surface
-  can be read before its setting arrives. Early reads or saved native references can bypass
-  protection. This is a real seam, not an atomic browser policy.
-- **The extension is detectable.** Native-looking function strings do not make wrappers invisible.
-  Empty lists, rounded Math results and other behaviour changes can identify protections or a
-  settings combination. These controls reduce particular observations, not guarantee anonymity.
+- **Startup race (much reduced in v1.2.0).** The background mirrors `{ salt, settings,
+  allowlist }` into `storage.session` and opens it to content scripts, so `bridge.js` reads the
+  real configuration at `document_start` without waking the background. Only the first tab of a
+  browser session falls back to a runtime message; until it answers, shipped defaults apply.
+  Early reads can still happen in that window. This is a real seam, not an atomic browser policy.
+- **The extension is detectable.** Wrappers look wrapped: the v1.2.0 release removed the
+  `Function.prototype.toString` override and the `window.__fpdCloak` global. Empty lists, rounded
+  Math results and other behaviour changes can identify protections or a settings combination.
+  These controls reduce particular observations, not guarantee anonymity.
 - **Page-world channels are not a security boundary.** The configuration and stats events are
-  page-visible; hostile page code can spoof configuration events or replace hooks. Turning off
-  *Count activity* reduces stats traffic, but does not make those API hooks tamper-proof. The new
+  page-visible. Since v1.2.0 the listener is schema-validated (known boolean keys only), the salt
+  is sealed after first delivery, and pausing is a pass-through flag — a page-dispatched event can
+  pause damping on its own page but cannot uninstall hooks, recover saved native references, or
+  reach privileged storage/network rules. Noise values are deterministic from origin + date +
+  salt; the salt rides the page-visible channel, so a page that knows the algorithm can in
+  principle subtract the noise. Damping defeats fingerprinters that don't know about the
+  extension, not adversarial page code. Also note: content scripts never run in worker globals,
+  so canvas/audio fingerprinting performed inside a Web Worker is not damped at all. Turning off
+  *Count activity* reduces stats traffic, but does not make those API hooks tamper-proof. The
   browser-enforced lockdown rules are separate; page events cannot change them.
 - **Not a substitute for Tor Browser or full `resistFingerprinting`.** Those give a far larger
   anonymity set at a far higher usability cost. If you want the strongest available option in
@@ -321,7 +337,9 @@ test/README.md                verification instructions and coverage limits
 test/lockdown-server.cjs      repository-only HTTP fixture for native lockdown checks
 docs/coverage.md             passive/Math coverage, workers and transport boundaries
 docs/lockdown.md             global kill switches, enforcement limits and recovery
-package/                      built .zip
+package.sh                    deterministic XPI packaging (repo root)
+scripts/amocheck.sh           AMO pattern gate + packaged-file allowlist
+fingerprint-damper-*.xpi      built XPI (git-ignored)
 LICENSE                       GNU GPL v3
 ```
 
