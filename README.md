@@ -5,7 +5,7 @@
 <h1 align="center">Fingerprint Damper</h1>
 
 <p align="center">
-  <em>API-level anti-fingerprinting for Firefox.<br>Stable spoofing, not random noise.</em>
+  <em>API-level anti-fingerprinting for Firefox.<br>Stable, deterministic damping rather than per-call randomization.</em>
 </p>
 
 <p align="center">
@@ -29,14 +29,15 @@ deobfuscated PropellerAds SDK was found reading GPU model, battery level, screen
 timezone and window position through ordinary DOM calls — none of which an ad blocker can prevent
 once the script has loaded. This extension targets exactly those surfaces.
 
-**v1.2.0 status:** hardening release. Hardened page/extension config channel (schema-validated,
-salt sealed, pause is a pass-through flag — hooks are never uninstalled by page events),
-cryptographic per-browser-session salt stored in `storage.session`, snapshot bootstrap at
-`document_start` (no defaults flicker), safer defaults (audio, geometry, notification blocking,
-service-worker blocking and network blocking are now opt-in), and deterministic packaging
-(`./package.sh`, gated by `scripts/amocheck.sh`). Run `node --test test/*.test.cjs` —
-106/106 tests pass. The packaged XPI lives at the repo root (filename tracks `manifest.json`'s
-version; `*.xpi` is git-ignored).
+**v1.2.0 status:** hardening release. The page/extension config channel validates message
+structure, seals its initial salt and never uninstalls hooks; pause is a pass-through flag
+(because the channel stays page-visible, hostile page code can still request native pass-through
+on its own page — see Honest limitations). Cryptographic per-browser-session salt stored in
+`storage.session` (background-only), settings reconciled through a runtime round trip at
+`document_start`, safer defaults (audio, geometry, notification blocking, service-worker blocking
+and network blocking are now opt-in), byte-reproducible packaging (`./package.sh`, gated by
+`scripts/amocheck.sh`). Run `node --test test/*.test.cjs` — 107/107 tests pass. The packaged XPI
+lives at the repo root (filename tracks `manifest.json`'s version; `*.xpi` is git-ignored).
 
 ---
 
@@ -187,9 +188,12 @@ Requires **Firefox 142+** (`world: "MAIN"` content scripts landed in 128;
 From the repository root, run `./package.sh`. It stages exactly the shipped file set
 (`manifest.json`, `src/`, `rules/`, `icons/`, `LICENSE`), runs the AMO-sensitive pattern gate
 (`scripts/amocheck.sh`), and writes `fingerprint-damper-<version>.xpi` next to the manifest.
+Output is byte-reproducible: entries are added in sorted order and staged timestamps are
+normalised to `SOURCE_DATE_EPOCH` (or the release commit time, or a fixed epoch). Verify with:
+build, `sha256sum` the XPI, delete it, build again, compare.
 No transpilation, bundling, minification or code generation: the packaged files are the source
-files. `./package.sh --check` additionally runs `npx web-ext lint` first. For a quick local
-reload, `npx web-ext run` still works via `web-ext-config.cjs`.
+files. `./package.sh --check` additionally runs `npx web-ext lint` on the *staged* package. For a
+quick local reload, `npx web-ext run` still works via `web-ext-config.cjs`.
 
 ---
 
@@ -239,26 +243,29 @@ than claiming success.
 
 ## Honest limitations
 
-- **Startup race (much reduced in v1.2.0).** The background mirrors `{ salt, settings,
-  allowlist }` into `storage.session` and opens it to content scripts, so `bridge.js` reads the
-  real configuration at `document_start` without waking the background. Only the first tab of a
-  browser session falls back to a runtime message; until it answers, shipped defaults apply.
-  Early reads can still happen in that window. This is a real seam, not an atomic browser policy.
+- **Startup race.** The background stores the cryptographic browser-session salt in
+  `storage.session`, preserving it across event-page restarts (Firefox supports `storage.session`
+  in trusted extension contexts since 115; it does NOT expose it to content scripts, so there is
+  no session-storage fast path). At `document_start`, the isolated bridge requests the current
+  salt, settings and pause state from the background via a runtime message. Shipped defaults
+  remain active until that asynchronous response arrives, so very early page reads may precede
+  configuration reconciliation. This is a real seam, not an atomic browser policy.
 - **The extension is detectable.** Wrappers look wrapped: the v1.2.0 release removed the
   `Function.prototype.toString` override and the `window.__fpdCloak` global. Empty lists, rounded
   Math results and other behaviour changes can identify protections or a settings combination.
   These controls reduce particular observations, not guarantee anonymity.
 - **Page-world channels are not a security boundary.** The configuration and stats events are
-  page-visible. Since v1.2.0 the listener is schema-validated (known boolean keys only), the salt
-  is sealed after first delivery, and pausing is a pass-through flag — a page-dispatched event can
-  pause damping on its own page but cannot uninstall hooks, recover saved native references, or
-  reach privileged storage/network rules. Noise values are deterministic from origin + date +
-  salt; the salt rides the page-visible channel, so a page that knows the algorithm can in
-  principle subtract the noise. Damping defeats fingerprinters that don't know about the
-  extension, not adversarial page code. Also note: content scripts never run in worker globals,
-  so canvas/audio fingerprinting performed inside a Web Worker is not damped at all. Turning off
-  *Count activity* reduces stats traffic, but does not make those API hooks tamper-proof. The
-  browser-enforced lockdown rules are separate; page events cannot change them.
+  page-visible. The configuration listener validates message structure (known boolean keys only),
+  seals its initial salt and never uninstalls hooks. Because it remains page-visible, hostile
+  page code can still request native pass-through behavior on its own page by dispatching the
+  config event with `allowlisted: true`; it cannot uninstall hooks, recover saved native
+  references, or reach privileged storage/network rules. Noise values are deterministic from
+  origin + date + salt; the salt rides the page-visible channel, so a page that knows the
+  algorithm can in principle subtract the noise. Damping defeats fingerprinters that don't know
+  about the extension, not adversarial page code. Also note: content scripts never run in worker
+  globals, so canvas/audio fingerprinting performed inside a Web Worker is not damped at all.
+  Turning off *Count activity* reduces stats traffic, but does not make those API hooks
+  tamper-proof. The browser-enforced lockdown rules are separate; page events cannot change them.
 - **Not a substitute for Tor Browser or full `resistFingerprinting`.** Those give a far larger
   anonymity set at a far higher usability cost. If you want the strongest available option in
   Firefox itself, `privacy.resistFingerprinting` exists — it will break more, and this extension

@@ -37,6 +37,14 @@ test('manifest carries the v1.2.0 release branding', () => {
   assert.equal(manifest.version, '1.2.0');
 });
 
+test('static ad-network ruleset ships disabled', () => {
+  // netBlock is opt-in since v1.2.0; the packaged manifest must not enable
+  // the ruleset before background reconciliation runs.
+  const ruleset = manifest.declarative_net_request.rule_resources
+    .find(resource => resource.id === 'adnets');
+  assert.equal(ruleset.enabled, false);
+});
+
 test('static ad-network list has a reviewed third-party source snapshot and preserves safety exclusions', () => {
   assert.deepEqual(rules.map(rule => rule.id), [1, 2, 3, 4]);
   const teardown = rules.find(rule => rule.id === 1);

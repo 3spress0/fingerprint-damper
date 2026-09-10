@@ -138,7 +138,7 @@ function deferred() {
   const promise = new Promise(r => { resolve = r; });
   return { promise, resolve };
 }
-const UI = { id: 'fingerprint-damper@local', url: 'moz-extension://unit/src/options.html' };
+const UI = { id: 'fingerprint-damper@3spress0', url: 'moz-extension://unit/src/options.html' };
 const PAGE = { id: UI.id, url: 'https://site.test/path', tab: { id: 7, url: 'https://site.test/path' } };
 const unrelated = { id: 99999, priority: 1, action: { type: 'block' }, condition: { urlFilter: 'untouched.test' } };
 function setup(options = {}) {
@@ -152,7 +152,6 @@ function setup(options = {}) {
     if (typeof step === 'function') await step();
   }
   const sharedSession = options.session || {};
-  let accessLevelCalls = 0;
   const browser = {
     runtime: { id: UI.id, getURL: path => 'moz-extension://unit/' + path,
       onMessage: { addListener: fn => { events.message = fn; } },
@@ -164,8 +163,7 @@ function setup(options = {}) {
       },
       session: {
         async get(key) { return { [key]: clone(sharedSession[key]) }; },
-        async set(value) { Object.assign(sharedSession, clone(value)); },
-        async setAccessLevel() { accessLevelCalls++; }
+        async set(value) { Object.assign(sharedSession, clone(value)); }
       }
     },
     declarativeNetRequest: {
@@ -199,7 +197,7 @@ function setup(options = {}) {
   vm.runInContext(background, context);
   const send = (msg, sender = UI) => events.message(msg, sender);
   return { state, calls, writes, events, failures, send,
-    session: sharedSession, accessLevelCalls: () => accessLevelCalls,
+    session: sharedSession,
     ready: () => send({ type: 'popupData' }), settings: patch => send({ type: 'setSettings', settings: patch }) };
 }
 
@@ -390,7 +388,6 @@ test('session salt is one 64-hex value per browser session, shared across event-
   await first.ready();
   assert.match(first.session.fpdSession.salt, /^[0-9a-f]{64}$/);
   assert.equal(first.session.fpdSession.settings.netBlock, false, 'snapshot carries the shipped profile');
-  assert.ok(first.accessLevelCalls() >= 1, 'content-script access level is requested');
   const restarted = setup({ session });
   await restarted.ready();
   assert.equal(restarted.session.fpdSession.salt, first.session.fpdSession.salt,

@@ -40,9 +40,9 @@
 
   // ---------------------------------------------------------------- settings
   // Defaults mirror the shipped profile; bridge.js applies the user's real
-  // settings from the session snapshot a few ms later (cold-start fallback:
-  // a runtime message). Feature-off just means pass-through, so a brief
-  // mismatch window only affects opt-in surfaces.
+  // settings via a runtime message from the background a few ms later.
+  // Feature-off just means pass-through, so a brief mismatch window only
+  // affects opt-in surfaces; very early reads can precede reconciliation.
   const cfg = {
     canvas: true,
     webgl: true,

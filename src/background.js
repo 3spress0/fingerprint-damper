@@ -15,8 +15,10 @@
  *
  * Owns: settings, per-origin allowlist, the per-browser-session salt, per-tab
  * counters and browser-enforced network/CSP policy (separate from page-world
- * hooks). It is the ONLY writer of the session snapshot that content scripts
- * read at document_start (see SESSION_KEY below).
+ * hooks). The salt lives in storage.session, which is a trusted extension
+ * context; content scripts read NOTHING from it directly (Firefox does not
+ * expose storage.session to content scripts). Pages are configured through
+ * the bridge's runtime message round trip instead.
  */
 
 const api = typeof browser !== 'undefined' ? browser : chrome;
@@ -73,20 +75,20 @@ async function readSession() {
   } catch (_) { return null; }
 }
 
-// Expose storage.session to this extension's content scripts (isolated world
-// only; pages can never reach it). Safe to call again after a restart.
-function openSessionToContentScripts() {
-  try {
-    api.storage.session.setAccessLevel({ accessLevel: 'trusted_and_content_scripts' });
-  } catch (_) {}
-}
-
 /*
- * Read (or create) the salt and write the full current snapshot:
+ * Read (or create) the salt and mirror the full current state into
+ * session storage:
  *   { salt, settings (public, lockdown keys excluded), allowlist }
- * Called on every settings/allowlist change, on event-page start and before
- * answering a getConfig fallback, so the snapshot in session storage always
- * matches storage.local.
+ *
+ * The mirror serves two purposes:
+ *  - the SALT survives MV3 event-page restarts (Firefox keeps storage.session
+ *    for the whole browser session and clears it on shutdown);
+ *  - getConfig can answer from one consistent object.
+ *
+ * Everything here runs in the trusted background context. Content scripts
+ * never read this mirror: Firefox does not expose storage.session to them
+ * (and storage.session.setAccessLevel() is not supported there), so the
+ * bridge always goes through runtime.sendMessage instead.
  */
 async function sessionSnapshot() {
   if (!sessionSalt) {
@@ -101,7 +103,6 @@ async function sessionSnapshot() {
     allowlist
   };
   try {
-    openSessionToContentScripts();
     await api.storage.session.set({ [SESSION_KEY]: value });
   } catch (_) {}
   return value;
@@ -229,8 +230,8 @@ async function changeSettings(patch) {
   const settings = Object.assign(await getSettings(), patch);
   const result = await applySettings(settings, true);
   if (result.ok) {
-    // Snapshot first, then tell live pages; their bridge re-reads the
-    // snapshot, so it must already reflect the change.
+    // Refresh the session mirror first; live pages are then re-served through
+    // their bridge round trip, which answers from it.
     await sessionSnapshot();
     try { await broadcast(); }
     catch (error) { result.warning = 'Saved, but live page updates failed: ' + errorText(error) + '. Reload affected pages.'; }
@@ -260,8 +261,8 @@ api.runtime.onMessage.addListener((msg, sender) => {
 
   if (msg.type === 'getConfig') {
     return (async () => {
-      // Cold-start fallback for pages whose session snapshot was empty
-      // (first tab of a session): (re)create the snapshot, then serve it.
+      // (Re)create the browser-session salt and mirror on first use, then
+      // answer the bridge from it.
       const snapshot = await sessionSnapshot();
       const origin = originOf(sender.url);
       return { salt: snapshot.salt, settings: snapshot.settings,
