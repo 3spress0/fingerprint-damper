@@ -1,4 +1,4 @@
-# AMO reviewer notes — Fingerprint Damper v1.2.0
+# AMO reviewer notes - Fingerprint Damper v1.2.0
 
 Short, factual notes for reviewers. Nothing here changes the shipped code; see the
 linked files for detail.
@@ -44,7 +44,7 @@ real Firefox; removing it without native testing risks breaking the documented p
 ## Data handling / privacy
 
 - All settings storage is local (`storage.local` for persistent settings, `storage.session`
-  for the session salt — the background is the only context that touches the salt;
+  for the session salt - the background is the only context that touches the salt;
   content/script pages never get `storage.session` access).
 - No analytics, telemetry, remote filter updates, or network calls originate from the
   extension. The only network effect is the user-enabled DNR blocking rules.
@@ -82,9 +82,12 @@ marked experimental in the UI and docs. None are enabled by default.
 `package.sh` stages exactly the shipped file set, normalizes timestamps
 (`SOURCE_DATE_EPOCH` → last commit epoch → fixed epoch fallback), sorts entries and zips with
 `-X`, so two builds of the same tree produce identical bytes. No transpilation or minification:
-the packaged files are the source files.
+the packaged files are the source files. `./package.sh --verify` prints a one-block release
+report (version, XPI name, SHA-256, file count, web-ext lint counts, test counts, git tag
+agreement). Where Info-ZIP is unavailable (e.g. Windows/Git Bash), a Python zipfile writer is
+used automatically with the same sorted entries and normalized timestamps.
 
 ## Source availability
 
 GPL-3.0-or-later; repository `https://github.com/3spress0/fingerprint-damper`, source tree
-included in the source archive (same tree — no build step).
+included in the source archive (same tree - no build step).

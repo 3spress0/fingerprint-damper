@@ -1,4 +1,4 @@
-/* Fingerprint Damper — API-level anti-fingerprinting for Firefox.
+/* Fingerprint Damper - API-level fingerprint damping for Firefox.
  * Copyright (C) 2026 espress0
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -33,8 +33,8 @@ const sourceSnapshotAdditions = [
   'wvhba6470p.com', 'ww2.imgadult.com', 'ww2.imgtaxi.com', 'ww2.imgwallet.com', 'y1jxiqds7v.com'
 ];
 
-test('manifest carries the v1.2.0 release branding', () => {
-  assert.equal(manifest.version, '1.2.0');
+test('manifest carries the current release version', () => {
+  assert.equal(manifest.version, '1.2.1');
 });
 
 test('static ad-network ruleset ships disabled', () => {

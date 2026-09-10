@@ -157,7 +157,7 @@ Check each switch alone, then the combined maximum preset; bypass cache on reloa
 | Embeds | Covered frame/object loads denied. Initial empty frames are not claimed to be forbidden. |
 | Connection denial | Compare server events: no fetch/beacon/socket attempts from covered loads. A socket error alone proves nothing because the fixture intentionally rejects baseline handshakes too. |
 | Secondary-request seal | Only initial/top-level visits remain in this fixture's server events; no image, CSS, frame, script or API requests. Verify policy headers even if the page looks empty. |
-| Cookie stripping | Prime with locks off, enable cookie stripping, reload. Server `probeCookie` should be false; incoming Set-Cookie should be removed. With JS still allowed, the old fake cookie can remain JS-visible—this switch doesn't erase it. |
+| Cookie stripping | Prime with locks off, enable cookie stripping, reload. Server `probeCookie` should be false; incoming Set-Cookie should be removed. With JS still allowed, the old fake cookie can remain JS-visible-this switch doesn't erase it. |
 | Cache identifiers | With only cache lockdown enabled, open `/cache-probe`; its response should show no ETag/Last-Modified and `Cache-Control: no-store, max-age=0`. Reload normally and inspect `/events`: validator-presence booleans should stay false. This cannot prove old HTTP/BFCache/service-worker entries were cleared. |
 | Header removal | Compare actual request headers/server-presence booleans for UA, language and referrer. Origin/auth/security headers must not be removed. No claim of TLS/header-order normalization. |
 | API pause | Global rules remain active on the paused HTTP origin. UI wording must not suggest otherwise. |

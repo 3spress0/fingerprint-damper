@@ -180,8 +180,8 @@ real canvas            ada5b8c5
 | Count activity for the popup | Toolbar badge counts intercepted reads. Off by default for a quieter profile: it needs a page-visible event channel, which slightly increases detectability. |
 | Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. That array is the buffer's real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing. Off by default for that reason. |
 | Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. |
-| Block notification permission prompts | `Notification.requestPermission()` resolves `"default"` with **no dialog** — but only for requests that do not follow transient user activation; requests made right after a deliberate click still prompt normally. `"default"` reads as *the user dismissed it*, which is commonplace and unremarkable. |
-| Block ad service workers (experimental) | Rejects service-worker registrations whose host labels or script path match known ad-SDK patterns. Boundary-aware matching (host labels / path tokens), never raw substring tests. Pattern matching can hit unrelated apps — use the per-site pause as a bypass. |
+| Block notification permission prompts | `Notification.requestPermission()` resolves `"default"` with **no dialog** - but only for requests that do not follow transient user activation; requests made right after a deliberate click still prompt normally. `"default"` reads as *the user dismissed it*, which is commonplace and unremarkable. |
+| Block ad service workers (experimental) | Rejects service-worker registrations whose host labels or script path match known ad-SDK patterns. Boundary-aware matching (host labels / path tokens), never raw substring tests. Pattern matching can hit unrelated apps - use the per-site pause as a bypass. |
 | Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). Source-derived domains apply only to third-party requests; provenance in [rules/NOTICE.md](../rules/NOTICE.md). Ships disabled; excludes `etacloud.org` and `tubeapi.org` (the actual conversion backend in the y2mate teardown). |
 | Hide speech voice list | `getVoices()` returns an empty array. Native default speech remains available, but voice pickers and some accessibility flows may break. No fake voices are created. |
 | Hide media device list | Successful `enumerateDevices()` calls return an empty array, hiding enumerated labels, counts and IDs. Native errors and capture APIs remain unchanged. Camera/microphone/speaker pickers may break; this does **not** block capture. |
@@ -212,8 +212,8 @@ scope; selected HTTP headers can be removed with the separate [lockdown tier](lo
   explicit locales. Native local-time `Date` methods such as `toString()` and `getHours()` can
   still reveal the time zone even when the UTC option is on.
 - **Worker and worklet globals are unprotected.** Content scripts run in window realms, not
-  dedicated/shared/service workers or worklets. Any relevant API exposed in those globals — for
-  example OffscreenCanvas/WebGL, worker font APIs, Intl or worker navigator fields — bypasses the
+  dedicated/shared/service workers or worklets. Any relevant API exposed in those globals - for
+  example OffscreenCanvas/WebGL, worker font APIs, Intl or worker navigator fields - bypasses the
   window patches. The opt-in CSP worker/script lockdown blocks can deny new workers on covered
   documents; they do not normalize worker APIs or stop existing workers. Broader coverage needs a
   different architecture or browser-level protections, not another window-prototype patch.

@@ -21,14 +21,14 @@
 
 ## Purpose
 
-Ad blockers work at the **network layer** — they stop a request being made. This works at the
-**API layer** — it changes what a script reads once it is running. That gap is not theoretical:
+Ad blockers work at the **network layer** - they stop a request being made. This works at the
+**API layer** - it changes what a script reads once it is running. That gap is not theoretical:
 it came out of a live teardown of a YouTube-converter site whose deobfuscated PropellerAds SDK
 read GPU model, battery level, screen geometry, timezone and window position through ordinary DOM
-calls — none of which an ad blocker can prevent once the script has loaded.
+calls - none of which an ad blocker can prevent once the script has loaded.
 
 This reduces passive fingerprinting by ordinary scripts. The page-level wrappers are detectable
-and can be bypassed or switched to pass-through by adversarial page code — see
+and can be bypassed or switched to pass-through by adversarial page code - see
 [Main limitations](#main-limitations). A separate, **default-off global lockdown tier** uses
 browser-enforced network/CSP rules instead of spoofed values.
 
@@ -38,9 +38,9 @@ browser-enforced network/CSP rules instead of spoofed values.
 | Network | Privacy Badger | Heuristically learns third parties that track across sites |
 | **API** | **this** | **Changes what a script that got through is able to read** |
 
-**Design rules:** (1) one stable persona per origin per day — per-call randomness is itself a
+**Design rules:** (1) one stable persona per origin per day - per-call randomness is itself a
 signal; (2) blend into the biggest crowd rather than inventing unique fake values; (3) leave
-bot-detection surfaces like `navigator.plugins` alone — emptying them flags you; (4) anything with
+bot-detection surfaces like `navigator.plugins` alone - emptying them flags you; (4) anything with
 real breakage risk is opt-in. Full rationale and per-surface detail:
 [docs/coverage.md](docs/coverage.md).
 
@@ -78,11 +78,11 @@ Everything below must be switched on explicitly in Settings; each carries a brea
 
 Per-surface behaviour, caveats and exact boundaries: [docs/coverage.md](docs/coverage.md).
 
-## Global lockdown — experimental, extreme breakage
+## Global lockdown - experimental, extreme breakage
 
 Nine **default-off** browser-enforced network/CSP kill switches (block scripts, opaque-origin
 sandbox, block workers/embeds/connections, text-only loading, strip cookies, disable cache
-validators, remove identity headers). They apply globally — including on API-paused sites — are
+validators, remove identity headers). They apply globally - including on API-paused sites - are
 not an OS sandbox or transport firewall, and make many sites blank or static. Details, limits and
 recovery: [docs/lockdown.md](docs/lockdown.md). **Native Firefox validation is pending.**
 
@@ -110,10 +110,15 @@ node --test test/*.test.cjs
 
 # Build the AMO-ready XPI (stages the shipped file set, runs the AMO gate)
 ./package.sh            # or: ./package.sh --check  (also runs web-ext lint)
+./package.sh --verify   # full release report: tests, build, file count,
+                        # lint, SHA-256 and version/tag agreement
 ```
 
+Windows: run from Git Bash or WSL. If Info-ZIP is not installed, packaging
+falls back to a Python zipfile writer automatically (python3 or python on PATH).
+
 Packaging is byte-reproducible: sorted entry order, normalised timestamps
-(`SOURCE_DATE_EPOCH` → commit time → fixed epoch), no transpilation/bundling/minification — the
+(`SOURCE_DATE_EPOCH` → commit time → fixed epoch), no transpilation/bundling/minification - the
 packaged files are the source files. Verify by building twice and comparing `sha256sum`.
 Testing methodology and native-browser checklists: [test/README.md](test/README.md).
 
@@ -158,8 +163,8 @@ manifest.json                 MV3, Firefox event page (not a service worker)
 web-ext-config.cjs            package destination + excludes Node/browser test artifacts
 rules/adnets.json             declarativeNetRequest blocklist (ships disabled)
 rules/NOTICE.md               public source provenance and license notice
-src/inject.js                 MAIN world, document_start — all API patches
-src/bridge.js                 ISOLATED world — the only link to browser.*
+src/inject.js                 MAIN world, document_start - all API patches
+src/bridge.js                 ISOLATED world - the only link to browser.*
 src/background.js             settings, API allowlist, session salt, network-policy lifecycle, badge
 src/lockdown.js               pure global DNR/CSP policy definitions (extension pages only)
 src/popup.html|js             per-page activity + pause toggle
@@ -182,6 +187,6 @@ lockdown/CSP and network rules, which API pausing never disables.
 ## License
 
 **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). Full text in [LICENSE](LICENSE).
-Strong copyleft, chosen deliberately: anyone may use, study, modify and redistribute this — but
+Strong copyleft, chosen deliberately: anyone may use, study, modify and redistribute this - but
 derivatives must ship their source under the same license. A privacy tool whose derivatives can be
 closed up is a privacy tool waiting to be quietly turned into its opposite.

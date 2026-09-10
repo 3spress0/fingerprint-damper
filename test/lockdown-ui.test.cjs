@@ -1,4 +1,4 @@
-/* Fingerprint Damper — API-level anti-fingerprinting for Firefox.
+/* Fingerprint Damper - API-level fingerprint damping for Firefox.
  * Copyright (C) 2026 espress0
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -26,7 +26,7 @@ class Element {
 }
 function ui(page, initial = {}) {
   const ids = ['safe', 'risky', 'paused-sites', 'resume-all', 'lockdown', 'lock-max', 'lock-off', 'policy-status', 'save-error', 'saved',
-    'origin', 'counts', 'allow', 'opts', 'action-error'];
+    'origin', 'counts', 'allow', 'opts', 'action-error', 'status-pill', 'lockdown-pill'];
   const nodes = Object.fromEntries(ids.map(id => [id, new Element(['resume-all', 'lock-max', 'lock-off', 'allow'].includes(id) ? 'button' : 'div')]));
   const flatten = node => [node, ...node.children.flatMap(flatten)];
   const document = { getElementById: id => nodes[id], createElement: tag => new Element(tag),
@@ -150,6 +150,34 @@ test('popup keeps global lockdown distinct from per-site API pause', async () =>
   assert.match(env.nodes.allow.textContent, /Resume API patches/);
   assert.match(env.nodes['policy-status'].textContent, /globally.*2 rules configured/);
   assert.match(env.nodes.counts.children[0].textContent, /API patches paused/);
+});
+
+test('popup status pill shows Protected when damping is active', async () => {
+  const env = ui('popup');
+  await env.ready();
+  assert.equal(env.nodes['status-pill'].textContent, 'Protected');
+  assert.match(env.nodes['status-pill'].className, /protected/);
+  assert.equal(env.nodes['lockdown-pill'].hidden, true, 'no lockdown pill without active controls');
+});
+
+test('popup status pill shows Paused when the site is allowlisted', async () => {
+  const env = ui('popup', { allowlisted: true });
+  await env.ready();
+  assert.equal(env.nodes['status-pill'].textContent, 'Paused');
+  assert.match(env.nodes['status-pill'].className, /paused/);
+});
+
+test('popup status pill shows No page without an origin', async () => {
+  const env = ui('popup', { origin: null });
+  await env.ready();
+  assert.equal(env.nodes['status-pill'].textContent, 'No page');
+});
+
+test('popup lockdown pill reports the number of active controls', async () => {
+  const env = ui('popup', { settings: { lockSandbox: true, lockScripts: true } });
+  await env.ready();
+  assert.equal(env.nodes['lockdown-pill'].hidden, false);
+  assert.equal(env.nodes['lockdown-pill'].textContent, '2 lockdown controls active');
 });
 
 test('popup emergency off works without a site origin and does not auto-reload tabs', async () => {

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Fingerprint Damper — self test</title>
+<title>Fingerprint Damper - self test</title>
 <style>
   :root { color-scheme: light dark; }
   body { font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -22,12 +22,24 @@
   .exposed { background: #c8442e; color: #fff; }
   .note { background: #8881; padding: 12px 14px; border-radius: 8px; margin-top: 22px;
           font-size: 13px; }
+  .warnfile { background: color-mix(in srgb, #c8442e 12%, transparent);
+          border-left: 3px solid #c8442e; padding: 12px 14px; border-radius: 0 8px 8px 0;
+          margin-top: 16px; font-size: 13px; }
   code { background: #8882; padding: 1px 5px; border-radius: 4px; }
 </style>
 </head>
 <body>
-<h1>Fingerprint Damper — self test</h1>
+<h1>Fingerprint Damper - self test</h1>
 <p class="sub">Load this once with the extension off, once with it on, and compare.</p>
+
+<div class="warnfile" id="filewarn" hidden>
+  <strong>This page is running from <code>file://</code>, where the extension cannot inject.</strong>
+  Every surface below will read native/exposed regardless of your settings, so this view
+  cannot verify damping. Serve the repository over HTTP instead:
+  <code>python3 -m http.server 8000</code>, then open
+  <code>http://127.0.0.1:8000/test/selftest.html</code>.
+</div>
+<script>if (location.protocol === 'file:') document.getElementById('filewarn').hidden = false;</script>
 
 <table>
   <thead><tr><th>Surface</th><th>Value seen by this page</th></tr></thead>
@@ -41,7 +53,7 @@
   read 8 (as does device memory only when the browser exposes it), window position reads
   0, and the notification prompt resolves to
   <code>default</code> without ever showing a dialog.
-  Reload twice with the extension on — the hashes should stay <em>identical</em>
+  Reload twice with the extension on - the hashes should stay <em>identical</em>
   between reloads. Stability is the point; a hash that changes every reload is
   itself a tracking signal.
 </div>
