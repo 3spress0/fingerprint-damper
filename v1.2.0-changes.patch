@@ -1,0 +1,1388 @@
+diff --git a/README.md b/README.md
+index d572343..e06ae63 100644
+--- a/README.md
++++ b/README.md
+@@ -29,8 +29,14 @@ deobfuscated PropellerAds SDK was found reading GPU model, battery level, screen
+ timezone and window position through ordinary DOM calls — none of which an ad blocker can prevent
+ once the script has loaded. This extension targets exactly those surfaces.
+ 
+-**v1.1.0 status:** `web-ext lint` → 0 errors, 0 warnings, 0 notices. Packaged zip lives in
+-`package/` (filename tracks `manifest.json`'s version).
++**v1.2.0 status:** hardening release. Hardened page/extension config channel (schema-validated,
++salt sealed, pause is a pass-through flag — hooks are never uninstalled by page events),
++cryptographic per-browser-session salt stored in `storage.session`, snapshot bootstrap at
++`document_start` (no defaults flicker), safer defaults (audio, geometry, notification blocking,
++service-worker blocking and network blocking are now opt-in), and deterministic packaging
++(`./package.sh`, gated by `scripts/amocheck.sh`). Run `node --test test/*.test.cjs` —
++106/106 tests pass. The packaged XPI lives at the repo root (filename tracks `manifest.json`'s
++version; `*.xpi` is git-ignored).
+ 
+ ---
+ 
+@@ -97,24 +103,22 @@ Even the default protections can affect some sites; the per-site pause is the es
+ |---|---|
+ | Canvas / text metric noise | Up to 32 RGB low-bit flips on pixel readback/serialization (max channel delta 1/255), including main-thread `OffscreenCanvas`. The noise step is O(32); serialization needs a copy and skips canvases over 4 MP. `measureText()` fields get stable <0.01px jitter. This changes exact hashes, not reliable font-availability tests. |
+ | WebGL identity / readback | Vendor, renderer and matching version strings → `Mozilla` / `WebGL 1.0` or `2.0`; `WEBGL_debug_renderer_info` is hidden. Standard RGBA/UNSIGNED_BYTE `readPixels()` receives stable, low-bit RGB noise. Other WebGL capabilities, shader behavior, non-byte formats and PBO readback remain native. |
+-| Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. Inaudible. A `WeakSet` prevents repeated reads from accumulating drift. |
+-| Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. |
+ | Hardware capacity | `hardwareConcurrency` → 8 and, only if the browser already exposes it, `deviceMemory` → 8. No API is invented; worker navigators remain native. |
+ | Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell when its getters are patchable; native failures remain failures. Level plus discharge time is a startlingly good short-term cross-site correlator. |
+-| Push guard | `Notification.requestPermission()` resolves `"default"` with **no dialog**; service workers matching known ad patterns are refused. |
+-| Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). The 64 newly added source-derived domains apply only to third-party requests. See [source notice and pinned snapshot](rules/NOTICE.md). |
+ 
+-Note `requestPermission` returns `"default"`, not `"denied"`. "Denied" is a sticky, distinguishable
+-state; "default" reads as *the user dismissed it*, which is both commonplace and unremarkable.
+-
+-Also note the blocklist **excludes `etacloud.org` and `tubeapi.org`** — those are the actual
+-conversion backend. Blocking them would break the site's real function. The ad layer is cut; the
+-feature keeps working. That's the "doesn't hurt UX" line.
++Everything else in this extension is opt-in (below). Since v1.2.0 the shipped profile only
++includes fingerprint damping with a low breakage risk; controls that touch application data,
++prompts, workers or the network must be switched on explicitly.
+ 
+ ### Opt-in (off by default)
+ 
+ | Protection | Behaviour and trade-off |
+ |---|---|
++| Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. That array is the buffer's real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing. Off by default for that reason. |
++| Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. Off by default. |
++| Block notification permission prompts | `Notification.requestPermission()` resolves `"default"` with **no dialog** — but only for requests that do not follow transient user activation; requests made right after a deliberate click still prompt normally. `"default"` reads as *the user dismissed it*, which is commonplace and unremarkable. Off by default. |
++| Block ad service workers (experimental) | Rejects service-worker registrations whose host labels or script path match known ad-SDK patterns. Boundary-aware matching (host labels / path tokens), never raw substring tests. Off by default; pattern matching can hit unrelated apps — use the per-site pause as a bypass. |
++| Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). The 64 newly added source-derived domains apply only to third-party requests. See [source notice and pinned snapshot](rules/NOTICE.md). Off by default since v1.2.0. The blocklist **excludes `etacloud.org` and `tubeapi.org`** — those are the actual conversion backend in the y2mate teardown. |
+ | Hide speech voice list | `getVoices()` returns an empty array. Native default speech remains available, but voice pickers and some accessibility flows may break. No fake voices are created. |
+ | Hide media device list | Successful `enumerateDevices()` calls return an empty array, hiding enumerated labels, counts and IDs. Native errors and capture APIs remain unchanged. Camera/microphone/speaker pickers may break; this does **not** block capture. |
+ | Mask passive permission states | Native `PermissionStatus.state` reads report `prompt`; `Notification.permission` reports `default`. Real grants, explicit request results, query support/errors and events stay native. Sites may show redundant permission UI or disable features. |
+@@ -170,19 +174,22 @@ Not signed, so pick one:
+ 3. Select `manifest.json` in this folder.
+ 
+ **Permanent:** requires Firefox Developer Edition, Nightly, or ESR. Set
+-`xpinstall.signatures.required` to `false` in `about:config`, then install the zip in `package/`
+-matching `manifest.json`'s version, from `about:addons` → gear → *Install Add-on From File*.
++`xpinstall.signatures.required` to `false` in `about:config`, then install the `.xpi` at the repo
++root matching `manifest.json`'s version, from `about:addons` → gear → *Install Add-on From File*.
+ Release Firefox enforces signing with no override; for that you'd need to submit it to AMO
+ (self-distribution signing is free and doesn't require public listing).
+ 
+ Requires **Firefox 142+** (`world: "MAIN"` content scripts landed in 128;
+ `data_collection_permissions` in 140; Android parity in 142).
+ 
+-### Build a local zip
++### Build the XPI
+ 
+-From the repository root, run `npx web-ext build` (or an installed `web-ext build`).
+-`web-ext-config.cjs` writes the versioned archive to ignored `package/` and excludes the Node/browser
+-test artifacts from the installable zip.
++From the repository root, run `./package.sh`. It stages exactly the shipped file set
++(`manifest.json`, `src/`, `rules/`, `icons/`, `LICENSE`), runs the AMO-sensitive pattern gate
++(`scripts/amocheck.sh`), and writes `fingerprint-damper-<version>.xpi` next to the manifest.
++No transpilation, bundling, minification or code generation: the packaged files are the source
++files. `./package.sh --check` additionally runs `npx web-ext lint` first. For a quick local
++reload, `npx web-ext run` still works via `web-ext-config.cjs`.
+ 
+ ---
+ 
+@@ -216,10 +223,11 @@ A file-based or JS-driven self-test cannot prove that scripts were blocked befor
+ ## Using it
+ 
+ Toolbar badge shows how many fingerprint reads were intercepted on the current page. Click for a
+-breakdown and a **Pause API patches on this site** button (per-origin, persists, reloads the tab).
+-The badge counts page API reports, not DNR/network blocks. Settings also has a **Paused sites** list:
+-resume one origin, or confirm **Resume API patches on all sites**, without needing to revisit a broken
+-page. Reload tabs after resuming so their page-world hooks are installed again.
++breakdown and a **Pause API patches on this site** button (per-origin, persists). Since v1.2.0,
++pausing and resuming apply **live** to open pages: hooks stay installed and simply pass through to
++native behaviour while paused — no tab reload is forced. A reload only helps if a page cached
++earlier values. The badge counts page API reports, not DNR/network blocks. Settings also has a
++**Paused sites** list: resume one origin, or confirm **Resume API patches on all sites**.
+ 
+ API pause never disables the global ad-network switch or global lockdown. The Paused sites controls
+ only change that per-origin API list; they do not make global network/CSP rules permissive. If
+@@ -231,17 +239,25 @@ than claiming success.
+ 
+ ## Honest limitations
+ 
+-- **Startup race.** The page-world script can't read `browser.storage`, so it applies protective
+-  defaults at `document_start` and reconciles with your settings asynchronously via `bridge.js`.
+-  An allowlisted site can briefly see protective defaults before restoration; an opt-in surface
+-  can be read before its setting arrives. Early reads or saved native references can bypass
+-  protection. This is a real seam, not an atomic browser policy.
+-- **The extension is detectable.** Native-looking function strings do not make wrappers invisible.
+-  Empty lists, rounded Math results and other behaviour changes can identify protections or a
+-  settings combination. These controls reduce particular observations, not guarantee anonymity.
++- **Startup race (much reduced in v1.2.0).** The background mirrors `{ salt, settings,
++  allowlist }` into `storage.session` and opens it to content scripts, so `bridge.js` reads the
++  real configuration at `document_start` without waking the background. Only the first tab of a
++  browser session falls back to a runtime message; until it answers, shipped defaults apply.
++  Early reads can still happen in that window. This is a real seam, not an atomic browser policy.
++- **The extension is detectable.** Wrappers look wrapped: the v1.2.0 release removed the
++  `Function.prototype.toString` override and the `window.__fpdCloak` global. Empty lists, rounded
++  Math results and other behaviour changes can identify protections or a settings combination.
++  These controls reduce particular observations, not guarantee anonymity.
+ - **Page-world channels are not a security boundary.** The configuration and stats events are
+-  page-visible; hostile page code can spoof configuration events or replace hooks. Turning off
+-  *Count activity* reduces stats traffic, but does not make those API hooks tamper-proof. The new
++  page-visible. Since v1.2.0 the listener is schema-validated (known boolean keys only), the salt
++  is sealed after first delivery, and pausing is a pass-through flag — a page-dispatched event can
++  pause damping on its own page but cannot uninstall hooks, recover saved native references, or
++  reach privileged storage/network rules. Noise values are deterministic from origin + date +
++  salt; the salt rides the page-visible channel, so a page that knows the algorithm can in
++  principle subtract the noise. Damping defeats fingerprinters that don't know about the
++  extension, not adversarial page code. Also note: content scripts never run in worker globals,
++  so canvas/audio fingerprinting performed inside a Web Worker is not damped at all. Turning off
++  *Count activity* reduces stats traffic, but does not make those API hooks tamper-proof. The
+   browser-enforced lockdown rules are separate; page events cannot change them.
+ - **Not a substitute for Tor Browser or full `resistFingerprinting`.** Those give a far larger
+   anonymity set at a far higher usability cost. If you want the strongest available option in
+@@ -321,7 +337,9 @@ test/README.md                verification instructions and coverage limits
+ test/lockdown-server.cjs      repository-only HTTP fixture for native lockdown checks
+ docs/coverage.md             passive/Math coverage, workers and transport boundaries
+ docs/lockdown.md             global kill switches, enforcement limits and recovery
+-package/                      built .zip
++package.sh                    deterministic XPI packaging (repo root)
++scripts/amocheck.sh           AMO pattern gate + packaged-file allowlist
++fingerprint-damper-*.xpi      built XPI (git-ignored)
+ LICENSE                       GNU GPL v3
+ ```
+ 
+diff --git a/package.sh b/package.sh
+new file mode 100755
+index 0000000..455a40c
+--- /dev/null
++++ b/package.sh
+@@ -0,0 +1,38 @@
++#!/bin/sh
++# Fingerprint Damper - deterministic packaging (finding: "packaging script").
++#
++# Produces the XPI that is submitted to AMO, containing exactly the reviewed
++# source files. No transpilation, bundling, minification or code generation:
++# the packaged files ARE the source files.
++#
++# Usage:
++#   ./package.sh            # builds fingerprint-damper-<version>.xpi
++#   ./package.sh --check    # lint first, then build (needs npx + web-ext)
++set -eu
++
++VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' manifest.json | head -n1)"
++[ -n "$VERSION" ] || { echo "cannot read version from manifest.json" >&2; exit 1; }
++
++OUTPUT="fingerprint-damper-${VERSION}.xpi"
++STAGE="$(mktemp -d)"
++trap 'rm -rf "$STAGE"' EXIT
++
++if [ "${1:-}" = "--check" ]; then
++  command -v npx >/dev/null 2>&1 || { echo "npx required for --check" >&2; exit 1; }
++  npx web-ext lint --source-dir .
++fi
++
++# Stage exactly the files that ship, so the zip has a stable, reviewable set.
++for entry in manifest.json src rules icons LICENSE; do
++  [ -e "$entry" ] || { echo "missing expected entry: $entry" >&2; exit 1; }
++  cp -R "$entry" "$STAGE/"
++done
++[ -f rules/NOTICE.md ] || { echo "missing rules/NOTICE.md" >&2; exit 1; }
++
++# Run the AMO-sensitive-pattern gate over the staged content.
++"$(dirname "$0")/scripts/amocheck.sh" "$STAGE"
++
++rm -f "$OUTPUT"
++(cd "$STAGE" && zip -X -r -q "$OLDPWD/$OUTPUT" manifest.json src rules icons LICENSE)
++echo "built $OUTPUT"
++echo "contents: $(cd "$STAGE" && find manifest.json src rules icons LICENSE -type f | sort | wc -l) files"
+diff --git a/scripts/amocheck.sh b/scripts/amocheck.sh
+new file mode 100755
+index 0000000..624392a
+--- /dev/null
++++ b/scripts/amocheck.sh
+@@ -0,0 +1,116 @@
++#!/bin/sh
++# Fingerprint Damper - AMO-sensitive pattern gate (finding: "automated checks").
++#
++# Fails when runtime source introduces patterns that are red flags or outright
++# banned at AMO review: eval / new Function / remote dynamic imports / remote
++# <script> insertion / executable code built from downloaded strings / any
++# network endpoint the code itself calls. It is a regression tripwire, not a
++# security analysis.
++#
++# Usage:
++#   scripts/amocheck.sh [DIR]     # scan DIR (default: repository root)
++#
++# The final section compares the file set against the manifest-derived
++# allowlist (content scripts, background scripts, pages, icons, rules,
++# LICENSE, NOTICE), so a stray file cannot ride into the XPI.
++set -eu
++
++ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
++cd "$ROOT"
++
++# ---- 1. forbidden runtime constructs ---------------------------------------
++if grep -RInE \
++    'eval[[:space:]]*\(|new[[:space:]]+Function|import[[:space:]]*\([^)]*https?://' \
++    manifest.json src rules 2>/dev/null; then
++  echo "FAIL: forbidden runtime construct found (eval/new Function/remote import)" >&2
++  exit 1
++fi
++
++if grep -RIInE \
++    'document[.]write|<script[^>]+src=[[:space:]]*["'"'"']https?://|new[[:space:]]+WebSocket[[:space:]]*\(|WebSocket[[:space:]]*\([^)]*https?://' \
++    src 2>/dev/null; then
++  echo "FAIL: remote script insertion or remote socket construction found" >&2
++  exit 1
++fi
++
++# ---- 2. no unapproved network endpoints (baseline: none at all) -------------
++if grep -RIInE 'fetch[[:space:]]*\(|XMLHttpRequest|navigator[.]sendBeacon' src 2>/dev/null; then
++  echo "FAIL: unapproved network endpoint call found (extension must make none)" >&2
++  exit 1
++fi
++
++# ---- 3. packaged file allowlist ---------------------------------------------
++# The staged package (no README.md) must contain exactly the manifest-derived
++# file set. A dev checkout has extra files by design, so a root scan stops
++# after the source checks above.
++if [ -f "$ROOT/README.md" ]; then
++  echo "amocheck: source scan clean (dev checkout; file-set check runs on the package stage)"
++  exit 0
++fi
++
++node - "$ROOT" <<'EOF'
++const fs = require('fs');
++const path = require('path');
++const root = process.argv[2];
++const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
++
++const allowed = new Set();
++const add = (v) => { if (typeof v === 'string') allowed.add(v); };
++const addMany = (v) => { if (Array.isArray(v)) v.forEach(add); };
++
++for (const cs of manifest.content_scripts || []) addMany(cs.js);
++for (const s of (manifest.background && manifest.background.scripts) || []) add(s);
++if (manifest.background && manifest.background.service_worker) add(manifest.background.service_worker);
++if (manifest.options_ui) add(manifest.options_ui.page);
++if (manifest.action) add(manifest.action.default_popup);
++if (manifest.page_action) add(manifest.page_action.default_popup);
++for (const v of Object.values(manifest.icons || {})) add(v);
++const addIcon = (icon) => {
++  if (typeof icon === 'string') add(icon);
++  else for (const v of Object.values(icon || {})) add(v);
++};
++addIcon(manifest.action && manifest.action.default_icon);
++addIcon(manifest.page_action && manifest.page_action.default_icon);
++for (const r of (manifest.declarative_net_request && manifest.declarative_net_request.rule_resources) || []) add(r.path);
++// Files referenced from packaged HTML pages (e.g. options.html -> options.js).
++const pages = [];
++const collect = (v) => { if (typeof v === 'string') pages.push(v); };
++for (const cs of manifest.content_scripts || []) for (const v of cs.js || []) collect(v);
++for (const s of (manifest.background && manifest.background.scripts) || []) collect(s);
++collect(manifest.options_ui && manifest.options_ui.page);
++collect(manifest.action && manifest.action.default_popup);
++for (const page of pages) {
++  if (!page.endsWith('.html')) continue;
++  const html = fs.readFileSync(path.join(root, page), 'utf8');
++  for (const match of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
++    const ref = match[1];
++    if (!ref || ref.startsWith('#') || /^[a-z]+:/i.test(ref)) continue;   // skip anchors/URLs
++    add(path.posix.join(path.posix.dirname(page), ref));
++  }
++}
++add('manifest.json');
++add('LICENSE');
++add('rules/NOTICE.md');
++
++const actual = [];
++(function walk(dir) {
++  for (const e of fs.readdirSync(dir).sort()) {
++    const p = path.join(dir, e);
++    const rel = path.relative(root, p);
++    if (fs.statSync(p).isDirectory()) { walk(p); continue; }
++    if (rel.startsWith('.git') || rel.startsWith('test') || rel.startsWith('docs') ||
++        rel === 'package.sh' || rel === 'web-ext-config.cjs' || rel.startsWith('scripts/')) continue;
++    actual.push(rel);
++  }
++})(root);
++
++const missing = [...allowed].filter(f => !actual.includes(f)).sort();
++const extra = actual.filter(f => !allowed.has(f)).sort();
++if (missing.length || extra.length) {
++  console.error('FAIL: packaged file set differs from the manifest allowlist');
++  if (missing.length) console.error('--- allowed but missing ---\n' + missing.join('\n'));
++  if (extra.length) console.error('--- present but not allowed ---\n' + extra.join('\n'));
++  process.exit(1);
++}
++console.log('amocheck: clean (' + actual.length + ' files match the manifest allowlist)');
++EOF
+diff --git a/src/background.js b/src/background.js
+index e3da9ce..d53197c 100644
+--- a/src/background.js
++++ b/src/background.js
+@@ -13,21 +13,26 @@
+ /*
+  * Fingerprint Damper - background event page.
+  *
+- * Owns: settings, per-origin allowlist, the per-session salt, per-tab counters
+- * and browser-enforced network/CSP policy (separate from page-world hooks).
++ * Owns: settings, per-origin allowlist, the per-browser-session salt, per-tab
++ * counters and browser-enforced network/CSP policy (separate from page-world
++ * hooks). It is the ONLY writer of the session snapshot that content scripts
++ * read at document_start (see SESSION_KEY below).
+  */
+ 
+ const api = typeof browser !== 'undefined' ? browser : chrome;
+ 
++// v1.2.0 shipped profile: fingerprint damping on, everything that touches
++// application data, prompts or the network is opt-in/experimental.
+ const DEFAULTS = {
+   canvas: true,
+   webgl: true,
+-  audio: true,
+-  geometry: true,
++  audio: false,
++  geometry: false,
+   concurrency: true,
+   battery: true,
+-  pushGuard: true,
+-  netBlock: true,
++  notify: false,
++  swBlock: false,
++  netBlock: false,
+   clientRects: false,
+   timezone: false,
+   language: false,
+@@ -40,9 +45,67 @@ const DEFAULTS = {
+   ...FPDLockdown.defaults
+ };
+ 
+-// Rotates every browser session, so a site cannot link today's canvas hash to
+-// yesterday's. Never persisted.
+-const SESSION_SALT = Math.random().toString(36).slice(2) + Date.now().toString(36);
++/*
++ * One salt per browser session.
++ *
++ * The MV3 background is an event page: module state (and any Math.random
++ * here) is lost whenever it restarts, which would rotate the per-origin
++ * persona mid-session. So the salt is generated once with
++ * crypto.getRandomValues(), cached in memory, and mirrored into
++ * storage.session, which the browser clears when the session ends.
++ */
++const SALT_RE = /^[0-9a-f]{64}$/;
++const SESSION_KEY = 'fpdSession';   // { salt, settings, allowlist }
++
++let sessionSalt = null;
++
++function makeSalt() {
++  const bytes = new Uint8Array(32);
++  crypto.getRandomValues(bytes);
++  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
++}
++
++async function readSession() {
++  try {
++    const got = await api.storage.session.get(SESSION_KEY);
++    const value = got && got[SESSION_KEY];
++    return value && typeof value === 'object' ? value : null;
++  } catch (_) { return null; }
++}
++
++// Expose storage.session to this extension's content scripts (isolated world
++// only; pages can never reach it). Safe to call again after a restart.
++function openSessionToContentScripts() {
++  try {
++    api.storage.session.setAccessLevel({ accessLevel: 'trusted_and_content_scripts' });
++  } catch (_) {}
++}
++
++/*
++ * Read (or create) the salt and write the full current snapshot:
++ *   { salt, settings (public, lockdown keys excluded), allowlist }
++ * Called on every settings/allowlist change, on event-page start and before
++ * answering a getConfig fallback, so the snapshot in session storage always
++ * matches storage.local.
++ */
++async function sessionSnapshot() {
++  if (!sessionSalt) {
++    const existing = await readSession();
++    if (existing && SALT_RE.test(existing.salt || '')) sessionSalt = existing.salt;
++  }
++  if (!sessionSalt) sessionSalt = makeSalt();
++  const [settings, allowlist] = await Promise.all([getSettings(), getAllowlist()]);
++  const value = {
++    salt: sessionSalt,
++    settings: publicSettings(settings),
++    allowlist
++  };
++  try {
++    openSessionToContentScripts();
++    await api.storage.session.set({ [SESSION_KEY]: value });
++  } catch (_) {}
++  return value;
++}
+ 
+ // tabId -> { origin, counts }
+ const tabStats = new Map();
+@@ -166,6 +229,9 @@ async function changeSettings(patch) {
+   const settings = Object.assign(await getSettings(), patch);
+   const result = await applySettings(settings, true);
+   if (result.ok) {
++    // Snapshot first, then tell live pages; their bridge re-reads the
++    // snapshot, so it must already reflect the change.
++    await sessionSnapshot();
+     try { await broadcast(); }
+     catch (error) { result.warning = 'Saved, but live page updates failed: ' + errorText(error) + '. Reload affected pages.'; }
+   }
+@@ -176,6 +242,7 @@ async function saveAllowlist(list) {
+   await api.storage.local.set({ allowlist: list });
+   // Deliberately do not change global network/CSP rules or create allow rules.
+   try {
++    await sessionSnapshot();
+     await broadcast();
+     return { ok: true };
+   } catch (error) {
+@@ -193,10 +260,12 @@ api.runtime.onMessage.addListener((msg, sender) => {
+ 
+   if (msg.type === 'getConfig') {
+     return (async () => {
+-      const [settings, allowlist] = await Promise.all([getSettings(), getAllowlist()]);
++      // Cold-start fallback for pages whose session snapshot was empty
++      // (first tab of a session): (re)create the snapshot, then serve it.
++      const snapshot = await sessionSnapshot();
+       const origin = originOf(sender.url);
+-      return { salt: SESSION_SALT, settings: publicSettings(settings),
+-        allowlisted: !!origin && allowlist.includes(origin) };
++      return { salt: snapshot.salt, settings: snapshot.settings,
++        allowlisted: !!origin && snapshot.allowlist.includes(origin) };
+     })();
+   }
+ 
+@@ -296,8 +365,11 @@ api.tabs.onUpdated.addListener((id, info) => {
+ });
+ 
+ async function reconcile(persist = false) {
+-  try { return await applySettings(await getSettings(), persist); }
+-  catch (error) {
++  try {
++    const result = await applySettings(await getSettings(), persist);
++    if (result.ok) await sessionSnapshot();
++    return result;
++  } catch (error) {
+     policyStatus = { state: 'error', error: errorText(error), ruleCount: null };
+     return { ok: false, error: policyStatus.error };
+   }
+@@ -306,4 +378,4 @@ async function reconcile(persist = false) {
+ // every event-page start, and migrate defaults on install/update. Never auto-enable
+ // a lockdown control, clear site data, unregister workers or reload user tabs.
+ enqueue(() => reconcile());
+-api.runtime.onInstalled.addListener(() => enqueue(() => reconcile(true)));
+\ No newline at end of file
++api.runtime.onInstalled.addListener(() => enqueue(() => reconcile(true)));
+diff --git a/src/bridge.js b/src/bridge.js
+index 7b0712a..c145c0d 100644
+--- a/src/bridge.js
++++ b/src/bridge.js
+@@ -120,4 +120,4 @@
+   });
+ 
+   void delivered;
+-})();
+\ No newline at end of file
++})();
+diff --git a/src/inject.js b/src/inject.js
+index 2b809ba..02b2273 100644
+--- a/src/inject.js
++++ b/src/inject.js
+@@ -25,8 +25,9 @@
+  *      navigator.plugins and maxTouchPoints are deliberately LEFT ALONE:
+  *      ad SDKs use "plugins.length === 0" as a headless-bot signal, so
+  *      emptying it makes you MORE conspicuous, not less.
+- *   4. Everything is restorable. Originals are kept so an allowlisted site
+- *      can be handed its real browser back.
++ *   4. Hooks live for the document's lifetime. Pausing a site only raises a
++ *      per-call pass-through flag, so a page-dispatched event can never
++ *      uninstall protection or recover saved native references.
+  */
+ (() => {
+   'use strict';
+@@ -38,16 +39,19 @@
+   } catch (_) { return; }
+ 
+   // ---------------------------------------------------------------- settings
+-  // Protective defaults apply instantly. bridge.js reconciles with the user's
+-  // real preferences a few ms later (see README "Timing" for why).
++  // Defaults mirror the shipped profile; bridge.js applies the user's real
++  // settings from the session snapshot a few ms later (cold-start fallback:
++  // a runtime message). Feature-off just means pass-through, so a brief
++  // mismatch window only affects opt-in surfaces.
+   const cfg = {
+     canvas: true,
+     webgl: true,
+-    audio: true,
+-    geometry: true,
++    audio: false,   // opt-in: touches data returned by getChannelData()
++    geometry: false, // opt-in: affects window chrome measurements
+     concurrency: true,
+     battery: true,
+-    pushGuard: true,
++    notify: false,  // opt-in: block notification permission prompts
++    swBlock: false, // opt-in/experimental: ad service-worker pattern blocks
+     clientRects: false, // opt-in: affects positioning, selection, and hit-testing
+     timezone: false,   // opt-in: breaks calendars/booking flows
+     language: false,   // opt-in: breaks localisation
+@@ -61,7 +65,10 @@
+ 
+   let salt = '';
+   let active = true;
+-  const restore = [];   // [() => void]
++
++  // Keys the page-visible config event may toggle, and the sealed-salt guard.
++  const CONFIG_KEYS = new Set(Object.keys(cfg));
++  let saltSealed = false;
+ 
+   // -------------------------------------------------------------------- rng
+   function fnv1a(str) {
+@@ -109,7 +116,7 @@
+   }
+ 
+   // ------------------------------------------------------------- patch utils
+-  function patchMethod(obj, name, factory, restorers = restore) {
++  function patchMethod(obj, name, factory, restorers = null) {
+     if (!obj) return;
+     let desc;
+     try { desc = Object.getOwnPropertyDescriptor(obj, name); } catch (_) { return; }
+@@ -129,7 +136,10 @@
+ 
+     try {
+       Object.defineProperty(obj, name, { ...desc, value: replacement });
+-      restorers.push(() => { try { Object.defineProperty(obj, name, desc); } catch (_) {} });
++      // Restorers are optional: only the experimental Math rounding uses its
++      // own enable/disable cycle. Everything else stays installed for the
++      // document's lifetime (pausing is a per-call pass-through flag).
++      if (restorers) restorers.push(() => { try { Object.defineProperty(obj, name, desc); } catch (_) {} });
+     } catch (_) {}
+   }
+ 
+@@ -145,7 +155,6 @@
+         get: getter,
+         set: desc.set || undefined
+       });
+-      restore.push(() => { try { Object.defineProperty(obj, name, desc); } catch (_) {} });
+     } catch (_) {}
+   }
+ 
+@@ -158,17 +167,9 @@
+     return Object.getOwnPropertyDescriptor(window, name) ? window : null;
+   }
+ 
+-  // Native toString cloaking, so `fn.toString()` doesn't scream "patched".
+-  (function cloakToString() {
+-    const patched = new WeakSet();
+-    const origToString = Function.prototype.toString;
+-    patchMethod(Function.prototype, 'toString', (orig) => function toString() {
+-      if (patched.has(this)) return 'function () { [native code] }';
+-      return orig.call(this);
+-    });
+-    window.__fpdCloak = (fn) => { try { patched.add(fn); } catch (_) {} return fn; };
+-    void origToString;
+-  })();
++  // v1.2.0: the Function.prototype.toString override and window.__fpdCloak are
++  // intentionally gone. Wrappers look wrapped; native-looking lies added a
++  // page-wide override, a detector global and zero real stealth.
+ 
+   // ============================================================== 1. CANVAS
+   // Flip the low bit of a handful of pixels. Imperceptible to humans, fatal to
+@@ -489,8 +490,10 @@
+   }
+ 
+   // ============================================================== 3. AUDIO
+-  // Perturb ~32 samples by ~1e-7. Inaudible; breaks AudioContext hashing.
+-  // WeakSet guard stops repeated calls from accumulating drift.
++  // Off by default: getChannelData() returns the buffer's real backing
++  // Float32Array, so this perturbs application data, not just fingerprints.
++  // ~32 samples by ~1e-7; inaudible; breaks AudioContext hashing. WeakSet
++  // guard stops repeated calls from accumulating drift.
+   if (window.AudioBuffer) {
+     patchMethod(AudioBuffer.prototype, 'getChannelData', (orig) =>
+       function getChannelData(channel) {
+@@ -625,7 +628,6 @@
+               return active && cfg.battery ? value : nativeValue;
+             }
+           });
+-          restore.push(() => { try { Object.defineProperty(BatteryManager.prototype, name, desc); } catch (_) {} });
+           patched++;
+         } catch (_) {}
+       }
+@@ -655,16 +657,21 @@
+       });
+   }
+ 
+-  // ==================================================== 6. PUSH / SW GUARD
++  // ==================================================== 6. NOTIFY / SW GUARD
+   // The concrete harm from the y2mate teardown: a fake in-page "Allow
+   // notifications" card funnels you into the real prompt, then a service
+   // worker is registered for permanent ad delivery.
+-  const AD_SW = /(sw-check-permissions|sw\.hid\.js|pushsdk|9hito|rtmark|zdzhk|kbvcd|dulotadtor|abunownon|dawac|\bzoneid=)/i;
+-
+   if (window.Notification) {
+     patchMethod(Notification, 'requestPermission', (orig) =>
+       function requestPermission(cb) {
+-        if (!(active && cfg.pushGuard)) return orig.apply(this, arguments);
++        if (!(active && cfg.notify)) return orig.apply(this, arguments);
++        // Preserve deliberate user intent: only suppress prompts that do not
++        // follow transient user activation, the ad-SDK ambush pattern.
++        try {
++          if (navigator.userActivation && navigator.userActivation.isActive) {
++            return orig.apply(this, arguments);
++          }
++        } catch (_) {}
+         report('notify');
+         // "default" (not "denied") - the site is told the user dismissed it,
+         // which is the least distinguishable, least sticky answer.
+@@ -674,13 +681,23 @@
+       });
+   }
+ 
++  // Experimental, off by default. Denylist entries are matched with host
++  // labels and script-path tokens, never raw substring tests against the
++  // whole URL, so an unrelated host or path cannot trip the pattern.
++  const SW_HOST_LABELS = ['9hito', 'rtmark', 'zdzhk', 'kbvcd', 'dulotadtor',
++    'abunownon', 'dawac'];
++  const SW_PATH_TOKEN = /(?:^|\/)(?:sw-check-permissions(?:\.js)?|sw\.hid\.js|pushsdk)(?:$|[?/#])/i;
+   if (window.ServiceWorkerContainer) {
+     patchMethod(ServiceWorkerContainer.prototype, 'register', (orig) =>
+       function register(url) {
+-        if (active && cfg.pushGuard) {
++        if (active && cfg.swBlock) {
+           try {
+-            const u = String(url);
+-            if (AD_SW.test(u)) {
++            const parsed = new URL(String(url), location.href);
++            const labels = parsed.hostname.toLowerCase().split('.');
++            const path = parsed.pathname + parsed.search;
++            const hit = SW_HOST_LABELS.some(name => labels.includes(name)) ||
++              SW_PATH_TOKEN.test(path);
++            if (hit) {
+               report('swblock');
+               return Promise.reject(new DOMException(
+                 'Registration blocked by Fingerprint Damper', 'SecurityError'));
+@@ -759,7 +776,6 @@
+       if (desc && desc.configurable && desc.value === original) {
+         try {
+           Object.defineProperty(original.prototype, 'constructor', { ...desc, value: Intl[name] });
+-          restore.push(() => { try { Object.defineProperty(original.prototype, 'constructor', desc); } catch (_) {} });
+         } catch (_) {}
+       }
+     }
+@@ -977,7 +993,6 @@
+             onIceHandlers.set(this, { listener, wrapper });
+           }
+         });
+-        restore.push(() => { try { Object.defineProperty(peerPrototype, 'onicecandidate', onIceDesc); } catch (_) {} });
+       } catch (_) {}
+     }
+ 
+@@ -1081,9 +1096,7 @@
+   if (window.Math && window.DataView && window.ArrayBuffer) {
+     const bits = new DataView(new ArrayBuffer(8));
+     const mathRestorers = [];
+-    let retired = false;
+     const removeMath = () => { while (mathRestorers.length) mathRestorers.pop()(); };
+-    restore.push(() => { retired = true; removeMath(); });
+     function roundedMathResult(value) {
+       // Preserve native special values, signed zero and integer results.
+       if (!Number.isFinite(value) || value === 0 || Number.isInteger(value)) return value;
+@@ -1104,10 +1117,11 @@
+       return bits.getFloat64(0, false);
+     }
+ 
+-    // Leave native Math identities/JIT intrinsics alone while the option is off.
+-    // Once allowlisting restores the whole page, wait for reload like other hooks.
++    // Leave native Math identities/JIT intrinsics alone while the option is
++    // off or the site is paused; Math is the one surface that uses its own
++    // install/remove cycle instead of the pass-through flag.
+     updateMathRounding = () => {
+-      if (retired || !(active && cfg.mathRounding)) { removeMath(); return; }
++      if (!(active && cfg.mathRounding)) { removeMath(); return; }
+       if (mathRestorers.length) return;
+       for (const name of ['acos', 'acosh', 'asin', 'asinh', 'atan', 'atanh', 'atan2',
+                           'cos', 'cosh', 'exp', 'expm1', 'log', 'log1p', 'log2', 'log10',
+@@ -1116,7 +1130,7 @@
+         patchMethod(Math, name, (orig) => new Proxy(orig, {
+           apply(target, receiver, args) {
+             const value = Reflect.apply(target, receiver, args); // coerce inputs once
+-            if (retired || !(active && cfg.mathRounding)) return value;
++            if (!(active && cfg.mathRounding)) return value;
+             const rounded = roundedMathResult(value);
+             if (!Object.is(rounded, value)) report('mathRounding');
+             return rounded;
+@@ -1127,17 +1141,32 @@
+   }
+ 
+   // ==================================================== control channel
++  // Hardened listener. The MAIN world cannot authenticate this event (its
++  // whole scope is page-visible), so it accepts only:
++  //   - the SALT once (first delivery seals it; later values are ignored,
++  //     so a page cannot rotate or reset the per-session persona seed),
++  //   - known boolean settings (anything else is rejected, never merged),
++  //   - `allowlisted` as a pass-through FLAG only. Hooks are never removed,
++  //     so no page-dispatched event can restore saved native references.
+   document.addEventListener('__fpd_config', (ev) => {
+     let msg;
+     try { msg = JSON.parse(ev.detail); } catch (_) { return; }
+-    if (msg.salt != null) salt = String(msg.salt);
+-    if (msg.settings) Object.assign(cfg, msg.settings);
+-    if (msg.allowlisted === true && active) {
+-      active = false;
+-      while (restore.length) restore.pop()();
+-    } else if (msg.allowlisted === false) {
+-      active = true;
++    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
++
++    if (!saltSealed && typeof msg.salt === 'string' && msg.salt.length > 0 && msg.salt.length <= 256) {
++      salt = msg.salt;
++      saltSealed = true;
++    }
++
++    if (msg.settings && typeof msg.settings === 'object' && !Array.isArray(msg.settings)) {
++      for (const [key, value] of Object.entries(msg.settings)) {
++        if (CONFIG_KEYS.has(key) && typeof value === 'boolean') cfg[key] = value;
++      }
+     }
++
++    if (msg.allowlisted === true) active = false;
++    else if (msg.allowlisted === false) active = true;
++
+     updateMathRounding();
+   });
+ 
+diff --git a/src/options.html b/src/options.html
+index 3390edc..613e2b4 100644
+--- a/src/options.html
++++ b/src/options.html
+@@ -51,12 +51,13 @@
+ </head>
+ <body>
+   <h1>Fingerprint Damper</h1>
+-  <div class="sub">Reload affected pages after changes. HTTP/CSP locks require a fresh load (bypass cache).</div>
++  <div class="sub">API-patch changes apply live to open pages; reload if a page cached earlier values.
++    HTTP/CSP locks require a fresh load (bypass cache).</div>
+ 
+-  <h2>Enabled by default — low breakage risk</h2>
++  <h2>Recommended — on by default</h2>
+   <div id="safe"></div>
+ 
+-  <h2>Opt-in — known to break things</h2>
++  <h2>Opt-in / experimental — off by default</h2>
+   <div id="risky"></div>
+   <div class="warn">
+     Timezone and language spoofing can misdate calendars, bookings and delivery
+@@ -66,8 +67,8 @@
+   </div>
+ 
+   <h2>Paused sites</h2>
+-  <p class="d">These origins receive native page APIs after reload. Resuming patches here never changes
+-    the ad-network switch or global lockdown rules.</p>
++  <p class="d">API patches are paused live on these origins (hooks stay installed but pass through).
++    Pausing or resuming here never changes the ad-network switch or global lockdown rules.</p>
+   <div id="paused-sites" aria-live="polite"></div>
+   <button id="resume-all" type="button" hidden>Resume API patches on all sites…</button>
+ 
+diff --git a/src/options.js b/src/options.js
+index b7adc6e..28d7afe 100644
+--- a/src/options.js
++++ b/src/options.js
+@@ -12,28 +12,32 @@
+ 
+ const api = typeof browser !== 'undefined' ? browser : chrome;
+ 
++// On by default: fingerprint damping with a low breakage profile.
+ const SAFE = [
+   ['canvas', 'Canvas noise',
+    'Adds small pixel and measureText() noise to main-thread canvases, including OffscreenCanvas. Changes exact hashes; does not hide installed fonts.'],
+   ['webgl', 'Dampen WebGL identity / readback',
+    'Masks vendor, renderer and version fields, hides WEBGL_debug_renderer_info, and stably changes standard RGBA/UNSIGNED_BYTE readPixels() output. Other WebGL capability and shader surfaces remain native.'],
+-  ['audio', 'Audio noise',
+-   'Perturbs ~32 samples by 1e-7. Inaudible; defeats AudioContext hashing.'],
+-  ['geometry', 'Normalise window geometry',
+-   'Zeroes window position, reports outer size as inner size, flattens colour depth. Screen resolution is left real so responsive layouts still work.'],
+   ['concurrency', 'Normalise hardware capacity',
+    'Reports 8 CPU cores and, only where the browser already exposes it, 8 GB deviceMemory. It does not add APIs or patch worker navigators.'],
+   ['battery', 'Neutralise Battery API',
+    'Reports full and charging while retaining the native BatteryManager shell where available. Battery level is a strong short-term cross-site correlator.'],
+-  ['pushGuard', 'Block push-ad funnels',
+-   'Silently dismisses notification permission requests and blocks known ad service workers.'],
+-  ['netBlock', 'Block known ad / push networks',
+-   'Network-level block for 78 teardown and public-list ad/push domains. The expanded source-derived entries apply only to third-party requests; this is still narrower than a full ad blocker.'],
+   ['stats', 'Count activity for the popup',
+    'Slightly increases detectability, since it needs a page-visible event channel. Turn off for a quieter profile.']
+ ];
+ 
++// Off by default: touches application data, prompts, workers or the network.
+ const RISKY = [
++  ['audio', 'Audio noise',
++   'Perturbs ~32 samples by 1e-7 in AudioBuffer.getChannelData() results. That array is the buffer\'s real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing.'],
++  ['geometry', 'Normalise window geometry',
++   'Zeroes window position, reports outer size as inner size, flattens colour depth. Screen resolution is left real so responsive layouts still work.'],
++  ['notify', 'Block notification permission prompts',
++   'Requests that do not follow a deliberate click resolve "default" (no dialog), as if the user dismissed the prompt. Requests made right after a click still prompt normally.'],
++  ['swBlock', 'Block ad service workers (experimental)',
++   'Rejects service-worker registrations whose host labels or script path match known ad-SDK patterns. Off by default: pattern matching can hit unrelated apps; use the per-site pause as a bypass.'],
++  ['netBlock', 'Block known ad / push networks',
++   'Network-level block for 78 teardown and public-list ad/push domains. The expanded source-derived entries apply only to third-party requests; this is still narrower than a full ad blocker.'],
+   ['speechVoices', 'Hide speech voice list',
+    'getVoices() returns an empty list. Default speech remains native, but voice pickers and some accessibility features may stop working.'],
+   ['mediaDevices', 'Hide media device list',
+@@ -156,7 +160,7 @@ async function save(patch) {
+     saved = true;
+     await load();
+     if (result.warning) document.getElementById('save-error').textContent = result.warning;
+-    showSaved('Saved — reload affected pages');
++    showSaved('Saved — new pages and live hooks are updated; reload if a page cached results');
+   } catch (error) {
+     try { await load(); } catch (_) { /* Retain the explicit failure below. */ }
+     document.getElementById('save-error').textContent = (saved ? 'Saved, but UI refresh failed: ' : 'Not saved: ') + error.message;
+@@ -175,7 +179,7 @@ async function changePausedSites(type, origin) {
+     saved = true;
+     await load();
+     if (result.warning) document.getElementById('save-error').textContent = result.warning;
+-    showSaved('API patches resumed — reload affected tabs');
++    showSaved('Pause/resume applied to open pages; reload only if a page cached earlier values');
+   } catch (error) {
+     try { await load(); } catch (_) { /* Retain the explicit failure below. */ }
+     document.getElementById('save-error').textContent = (saved ? 'Saved, but UI refresh failed: ' : 'Not saved: ') + error.message;
+@@ -193,7 +197,7 @@ document.getElementById('lock-max').addEventListener('click', () => {
+ document.getElementById('lock-off').addEventListener('click', () => save({ ...FPDLockdown.defaults }));
+ document.getElementById('resume-all').addEventListener('click', () => {
+   if (busy || !pausedOrigins.length || !window.confirm('Resume API patches on every paused site? '
+-    + 'Global ad-network and lockdown rules will stay unchanged. Reload affected tabs afterward.')) return;
++    + 'Global ad-network and lockdown rules will stay unchanged.')) return;
+   return changePausedSites('clearAllowlist');
+ });
+ load().catch(error => { document.getElementById('save-error').textContent = error.message; });
+diff --git a/src/popup.html b/src/popup.html
+index c294d9e..22918c2 100644
+--- a/src/popup.html
++++ b/src/popup.html
+@@ -60,8 +60,8 @@
+     <h2>Global lockdown</h2>
+     <p id="policy-status" role="status" aria-live="polite">Checking browser rules…</p>
+     <button id="lock-off" type="button">Turn off all lockdown</button>
+-    <p class="note">API pause does not disable global rules. Reload affected pages to apply/release CSP.
+-    If removal fails, disable the extension in about:addons.</p>
++    <p class="note">API pause applies live and does not disable global rules. Reload affected pages
++    to apply/release CSP. If removal fails, disable the extension in about:addons.</p>
+     <p id="action-error" role="alert"></p>
+   </section>
+   <div class="foot"><a href="#" id="opts">Settings…</a></div>
+diff --git a/src/popup.js b/src/popup.js
+index 4ca2db6..1f2b9ee 100644
+--- a/src/popup.js
++++ b/src/popup.js
+@@ -80,8 +80,8 @@ document.getElementById('allow').addEventListener('click', () => action(async ()
+   if (!current || !current.origin) return;
+   const result = await api.runtime.sendMessage({ type: 'toggleAllowlist', origin: current.origin });
+   if (!result || !result.ok) throw new Error(result && result.error || 'Pause failed.');
+-  const tabs = await api.tabs.query({ active: true, currentWindow: true });
+-  if (tabs[0]) await api.tabs.reload(tabs[0].id);
++  // v1.2.0: pause/resume is a pass-through flag applied live to open pages;
++  // no reload is forced anymore. A reload only helps if a page cached values.
+   window.close();
+ }));
+ document.getElementById('lock-off').addEventListener('click', () => action(async () => {
+diff --git a/test/adnets.test.cjs b/test/adnets.test.cjs
+index 4afc4a5..d4aabe6 100644
+--- a/test/adnets.test.cjs
++++ b/test/adnets.test.cjs
+@@ -33,8 +33,8 @@ const sourceSnapshotAdditions = [
+   'wvhba6470p.com', 'ww2.imgadult.com', 'ww2.imgtaxi.com', 'ww2.imgwallet.com', 'y1jxiqds7v.com'
+ ];
+ 
+-test('manifest carries the v1.1.0 release branding', () => {
+-  assert.equal(manifest.version, '1.1.0');
++test('manifest carries the v1.2.0 release branding', () => {
++  assert.equal(manifest.version, '1.2.0');
+ });
+ 
+ test('static ad-network list has a reviewed third-party source snapshot and preserves safety exclusions', () => {
+diff --git a/test/browser-regression.js b/test/browser-regression.js
+index 15c2e66..775228b 100644
+--- a/test/browser-regression.js
++++ b/test/browser-regression.js
+@@ -298,43 +298,41 @@
+       if (native.notification) equal(Notification.permission, native.notification.get.call(Notification), 'permission state did not turn off');
+     });
+ 
+-    await check('Allowlisting restores original methods and constructor descriptors', () => {
++    await check('Pausing passes calls through while hooks stay installed (v1.2 semantics)', () => {
+       document.dispatchEvent(new CustomEvent('__fpd_config', { detail: JSON.stringify({ allowlisted: true }) }));
+-      assert(Element.prototype.getClientRects === native.elementRects, 'Element method not restored');
+-      assert(Range.prototype.getClientRects === native.rangeRects, 'Range method not restored');
+-      assert(Intl.NumberFormat === native.intl.NumberFormat, 'Intl constructor not restored');
+-      assert(Intl.NumberFormat.prototype.constructor === native.intl.NumberFormat, 'prototype constructor not restored');
+-      assert(Number.prototype.toLocaleString === native.number && Date.prototype.toLocaleString === native.date, 'built-in formatting methods not restored');
+-      if (native.voices) assert(SpeechSynthesis.prototype.getVoices === native.voices, 'voice method not restored');
+-      if (native.devices) assert(MediaDevices.prototype.enumerateDevices === native.devices, 'device method not restored');
+-      if (native.battery) assert(navigator.getBattery === native.battery, 'battery method not restored');
+-      if (native.batteryValues?.level) assert(Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get === native.batteryValues.level.get,
+-        'battery getter not restored');
+-      if (native.state) assert(Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get === native.state.get, 'permission getter not restored');
+-      if (native.notification) assert(Object.getOwnPropertyDescriptor(Notification, 'permission').get === native.notification.get, 'notification getter not restored');
+-      if (native.request) assert(Notification.requestPermission === native.request, 'request method not restored');
+-      if (native.hardware?.get) assert(Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get === native.hardware.get,
+-        'hardwareConcurrency getter not restored');
+-      if (native.deviceMemory?.get) assert(Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get === native.deviceMemory.get,
+-        'deviceMemory getter not restored');
++      // Hooks must NOT be uninstalled: every surface stays wrapped.
++      assert(Element.prototype.getClientRects !== native.elementRects, 'Element hook was uninstalled');
++      assert(Range.prototype.getClientRects !== native.rangeRects, 'Range hook was uninstalled');
++      assert(Intl.NumberFormat !== native.intl.NumberFormat, 'Intl constructor hook was uninstalled');
++      assert(Number.prototype.toLocaleString !== native.number && Date.prototype.toLocaleString !== native.date,
++        'locale method hooks were uninstalled');
++      if (native.voices) assert(SpeechSynthesis.prototype.getVoices !== native.voices, 'voice hook was uninstalled');
++      if (native.devices) assert(MediaDevices.prototype.enumerateDevices !== native.devices, 'device hook was uninstalled');
++      if (native.battery) assert(navigator.getBattery !== native.battery, 'battery hook was uninstalled');
++      if (native.request) assert(Notification.requestPermission !== native.request, 'notification request hook was uninstalled');
+       if (native.webgl) {
+-        assert(WebGLRenderingContext.prototype.getExtension === native.webgl.getExtension, 'WebGL getExtension not restored');
+-        assert(WebGLRenderingContext.prototype.getSupportedExtensions === native.webgl.getSupportedExtensions,
+-          'WebGL extension list method not restored');
+-        assert(WebGLRenderingContext.prototype.readPixels === native.webgl.readPixels, 'WebGL readPixels not restored');
++        assert(WebGLRenderingContext.prototype.getExtension !== native.webgl.getExtension,
++          'WebGL getExtension hook was uninstalled');
++        assert(WebGLRenderingContext.prototype.readPixels !== native.webgl.readPixels,
++          'WebGL readPixels hook was uninstalled');
+       }
+       if (native.webrtc) {
+-        assert(RTCPeerConnection.prototype.setLocalDescription === native.webrtc.setLocalDescription,
+-          'WebRTC setLocalDescription not restored');
+-        assert(RTCPeerConnection.prototype.createOffer === native.webrtc.createOffer &&
+-          RTCPeerConnection.prototype.createAnswer === native.webrtc.createAnswer &&
+-          RTCPeerConnection.prototype.getStats === native.webrtc.getStats, 'WebRTC methods not restored');
+-        if (native.webrtc.onicecandidate) {
+-          assert(Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get === native.webrtc.onicecandidate.get,
+-            'WebRTC event handler descriptor not restored');
+-        }
++        assert(RTCPeerConnection.prototype.setLocalDescription !== native.webrtc.setLocalDescription,
++          'WebRTC setLocalDescription hook was uninstalled');
+       }
+-      assert(Math.sin === native.math.sin && Math.pow === native.math.pow, 'Math methods not restored');
++      // Behaviour passes through: settings were turned off in the previous
++      // step, so every read must match the saved native outputs.
++      equal(snapshot(node.getBoundingClientRect()), snapshot(native.elementBounds.call(node)),
++        'paused rects are not native');
++      equal((12345.6).toLocaleString(), native.number.call(12345.6), 'paused locale is not native');
++      equal(Math.sin(1), native.math.sin(1), 'paused Math is not native');
++      // Resuming is a flag flip: the still-installed hooks re-arm in place.
++      document.dispatchEvent(new CustomEvent('__fpd_config', { detail: JSON.stringify({ allowlisted: false }) }));
++      assert(Element.prototype.getClientRects !== native.elementRects, 'hook lost on resume');
++      equal(Math.sin(1), native.math.sin(1), 'Math rounding stays off until opted in again');
++      // Forged pause shapes cannot flip the flag.
++      document.dispatchEvent(new CustomEvent('__fpd_config', { detail: JSON.stringify({ allowlisted: { forged: 1 } }) }));
++      assert(Element.prototype.getClientRects !== native.elementRects, 'forged pause shape was honoured');
+     });
+     const failed = results.filter(r => r.passed === false).length;
+     const skipped = results.filter(r => r.skipped).length;
+diff --git a/test/inject.test.cjs b/test/inject.test.cjs
+index b54a1a1..c50328c 100644
+--- a/test/inject.test.cjs
++++ b/test/inject.test.cjs
+@@ -285,7 +285,7 @@ for (const ctor of ['HTMLCanvasElement', 'OffscreenCanvas']) {
+   });
+ }
+ 
+-test('text jitter is consistent across canvas types and rotates with origin, day, and salt', () => {
++test('text jitter is consistent across canvas types, rotates with origin and day, and seals its salt', () => {
+   const width = (env, ctor = 'HTMLCanvasElement') => new env[ctor]().getContext('2d').measureText('probe').width;
+   const env = setup();
+   const baseline = width(env);
+@@ -293,8 +293,10 @@ test('text jitter is consistent across canvas types and rotates with origin, day
+   assert.equal(width(setup()), baseline);
+   assert.notEqual(width(setup({ origin: 'https://two.example' })), baseline);
+   assert.notEqual(width(setup({ day: '2026-09-06' })), baseline);
++  // The first delivered salt is sealed: a later page-dispatched event cannot
++  // rotate the persona mid-document.
+   env.configure({ salt: 'another-session' });
+-  assert.notEqual(width(env), baseline);
++  assert.equal(width(env), baseline, 'salt cannot be rotated after first delivery');
+ });
+ 
+ test('unsupported optional text metric fields are left absent', () => {
+@@ -373,6 +375,7 @@ test('convertToBlob skips canvases over four megapixels', async () => {
+ for (const prototypeGeometry of [false, true]) {
+   test(`geometry restores native values when off (window ${prototypeGeometry ? 'prototype' : 'instance'})`, () => {
+     const env = setup({ prototypeGeometry });
++    env.configure({ settings: { geometry: true } });   // opt-in since v1.2.0
+     const protectedValues = { availWidth: 1920, availHeight: 1080, availLeft: 0,
+                               availTop: 0, colorDepth: 24, pixelDepth: 24 };
+     const screenValues = () => Object.fromEntries(Object.keys(env.screen.real).map((p) => [p, env.screen[p]]));
+@@ -452,27 +455,48 @@ test('WebGL hides debug renderer metadata and applies stable noise only to stand
+   assert.throws(() => gl.readPixels(1, 2, 4, 2, 0x1908, 0x1401, native), error => error === gl.readError);
+ });
+ 
+-test('allowlisting restores the original canvas methods and geometry descriptors', async () => {
++test('pausing passes calls through while hooks stay installed (canvas, geometry, WebGL)', async () => {
+   const env = setup();
++  env.configure({ settings: { geometry: true } });
+   const canvas = new env.OffscreenCanvas();
+   const ctx = canvas.getContext('2d');
++  const protectedText = ctx.measureText('probe').width;
++  assert.notEqual(protectedText, METRICS.width);
++  const wrappedMeasure = ctx.measureText;
++  const wrappedAvail = Object.getOwnPropertyDescriptor(env.Screen.prototype, 'availWidth').get;
++  const wrappedScreenX = Object.getOwnPropertyDescriptor(env.host, 'screenX').get;
++  const wrappedExtension = env.WebGLRenderingContext.prototype.getExtension;
++  const wrappedSupported = env.WebGLRenderingContext.prototype.getSupportedExtensions;
++  const wrappedReadPixels = env.WebGLRenderingContext.prototype.readPixels;
++
+   env.configure({ allowlisted: true });
+-  assert.equal(env.CanvasRenderingContext2D.prototype.measureText, env.originals.measureText);
+-  assert.equal(ctx.measureText, env.originals.offscreenMeasureText);
+-  assert.equal(ctx.getImageData, env.originals.getImageData);
+-  assert.equal(canvas.convertToBlob, env.originals.convertToBlob);
+-  assert.equal(Object.getOwnPropertyDescriptor(env.Screen.prototype, 'availWidth').get, env.originals.availWidth);
+-  assert.equal(Object.getOwnPropertyDescriptor(env.host, 'screenX').get, env.originals.screenX);
++  // Hooks stay installed: identical wrapper objects, no native restoration.
++  assert.equal(ctx.measureText, wrappedMeasure);
++  assert.notEqual(ctx.measureText, env.originals.offscreenMeasureText);
++  assert.equal(Object.getOwnPropertyDescriptor(env.Screen.prototype, 'availWidth').get, wrappedAvail);
++  assert.equal(Object.getOwnPropertyDescriptor(env.host, 'screenX').get, wrappedScreenX);
++  assert.equal(env.WebGLRenderingContext.prototype.getExtension, wrappedExtension);
++  assert.equal(env.WebGLRenderingContext.prototype.getSupportedExtensions, wrappedSupported);
++  assert.equal(env.WebGLRenderingContext.prototype.readPixels, wrappedReadPixels);
++  // ... but every call passes through to native while paused.
+   assert.equal(ctx.measureText('probe').width, METRICS.width);
+-  assert.deepEqual((await canvas.convertToBlob()).data, canvas.pixels);
++  assert.equal(wrappedAvail.call(env.screen), env.screen.real.availWidth);
++  const blob = await canvas.convertToBlob();
++  assert.equal(blob.canvas, canvas);
++  assert.deepEqual(blob.data, canvas.pixels);
+   assert.equal(new env.WebGL2RenderingContext().getParameter(0x1f02), 'WebGL 2.0 native');
+-  assert.equal(env.WebGLRenderingContext.prototype.getExtension, env.originals.webglGetExtension);
+-  assert.equal(env.WebGLRenderingContext.prototype.getSupportedExtensions, env.originals.webglSupportedExtensions);
+-  assert.equal(env.WebGLRenderingContext.prototype.readPixels, env.originals.webglReadPixels);
++  // A page-dispatched "paused" event cannot recover saved native references...
++  assert.notEqual(ctx.measureText, env.originals.offscreenMeasureText);
++  assert.notEqual(wrappedExtension, env.originals.webglGetExtension);
++  // ... and resuming re-arms the same hooks in place (same stable persona).
++  env.configure({ allowlisted: false });
++  assert.equal(ctx.measureText('probe').width, protectedText);
++  assert.equal(new env.WebGL2RenderingContext().getParameter(0x1f02), 'WebGL 2.0');
+ });
+ 
+ test('missing OffscreenCanvas support does not prevent the other patches from installing', () => {
+   const env = setup({ offscreen: false });
++  env.configure({ settings: { geometry: true } });   // opt-in since v1.2.0
+   assert.notEqual(new env.HTMLCanvasElement().getContext('2d').measureText('probe').width, METRICS.width);
+   assert.equal(new env.WebGL2RenderingContext().getParameter(0x1f02), 'WebGL 2.0');
+   assert.equal(env.screen.availWidth, env.screen.width);
+@@ -553,8 +577,8 @@ test('rect seeds rotate with origin, day and session salt', () => {
+   assert.deepEqual(bounds(setup()), first);
+   assert.notDeepEqual(bounds(setup({ origin: 'https://two.example' })), first);
+   assert.notDeepEqual(bounds(setup({ day: '2026-09-06' })), first);
+-  env.configure({ salt: 'new-session' });
+-  assert.notDeepEqual(bounds(env), first);
++  env.configure({ salt: 'new-session' });   // ignored: salt already sealed
++  assert.deepEqual(bounds(env), first, 'rect seeds keep a sealed salt');
+ });
+ 
+ test('native Intl defaults are untouched until opted in', () => {
+@@ -730,23 +754,61 @@ test('locale wrappers preserve invalid-input errors, native brand checks and coe
+   })()`), true);
+ });
+ 
+-test('allowlisting restores rect methods, Intl constructors, prototype references and locale methods', () => {
++test('pausing passes rect/Intl/locale surfaces through while hooks stay installed (live resume)', () => {
+   const env = setup();
++  const values = () => env.evaluate(`JSON.stringify({
++    nf: new Intl.NumberFormat().resolvedOptions().locale,
++    num: Number.prototype.toLocaleString.call(12345.6),
++    date: new Date('2026-09-05T23:30:00Z').toLocaleString(),
++    bounds: new Element().getBoundingClientRect().toJSON(),
++    rects: new Range().getClientRects().item(0).toJSON()
++  })`);
++  // All these surfaces are opt-in and off by default since v1.2.0.
++  const nativeValues = values();
+   env.configure({ settings: { clientRects: true, language: true, timezone: true } });
++  const protectedValues = values();
++  assert.notEqual(protectedValues, nativeValues);
++  env.evaluate(`globalThis.wrapped = {
++    nf: Intl.NumberFormat, num: Number.prototype.toLocaleString,
++    bounds: Element.prototype.getBoundingClientRect, rects: Range.prototype.getClientRects
++  };`);
+   env.configure({ allowlisted: true });
+-  assert.equal(env.Element.prototype.getBoundingClientRect, env.originals.elementBounds);
+-  assert.equal(env.Element.prototype.getClientRects, env.originals.elementRects);
+-  assert.equal(env.Range.prototype.getBoundingClientRect, env.originals.rangeBounds);
+-  assert.equal(env.Range.prototype.getClientRects, env.originals.rangeRects);
+-  assert.equal(env.evaluate(`
+-    Intl.NumberFormat === nativeIntl.NumberFormat && Intl.DateTimeFormat === nativeIntl.DateTimeFormat &&
+-    Intl.Collator === nativeIntl.Collator && Intl.NumberFormat.prototype.constructor === nativeIntl.NumberFormat &&
+-    Intl.DateTimeFormat.prototype.constructor === nativeIntl.DateTimeFormat &&
+-    Number.prototype.toLocaleString === nativeLocaleMethods.number &&
+-    Date.prototype.toLocaleString === nativeLocaleMethods.date &&
+-    String.prototype.localeCompare === nativeLocaleMethods.compare &&
+-    String.prototype.toLocaleUpperCase === nativeLocaleMethods.upper
+-  `), true);
++  assert.equal(env.evaluate(`(() =>
++    wrapped.nf === Intl.NumberFormat && wrapped.num === Number.prototype.toLocaleString &&
++    wrapped.bounds === Element.prototype.getBoundingClientRect && wrapped.rects === Range.prototype.getClientRects &&
++    wrapped.nf !== nativeIntl.NumberFormat && wrapped.num !== nativeLocaleMethods.number
++  )()`), true, 'hooks stay installed while paused (no native restoration)');
++  assert.equal(values(), nativeValues, 'paused calls produce native outputs');
++  env.configure({ allowlisted: false });
++  assert.equal(values(), protectedValues, 'resume re-arms the same deterministic persona without a reload');
++});
++
++test('hardened config channel rejects unknown keys, wrong types and forged salt', () => {
++  const env = setup();
++  const width = () => new env.HTMLCanvasElement().getContext('2d').measureText('probe').width;
++  const baseline = width();
++  const dispatch = (detail) => env.document.dispatchEvent(new CustomEvent('__fpd_config', { detail }));
++  // Non-object / malformed payloads are ignored outright.
++  for (const raw of ['{broken', 'null', '[]', '"text"', '42', '{}']) dispatch(raw);
++  assert.equal(width(), baseline);
++  // A forged salt cannot rotate the sealed persona...
++  env.configure({ salt: 'forged-salt' });
++  assert.equal(width(), baseline);
++  // ...unknown settings keys and non-boolean values are rejected...
++  env.configure({ settings: { bogus: true } });
++  env.configure({ settings: { canvas: 'yes', webgl: 1 } });
++  assert.equal(width(), baseline);
++  // ...while valid boolean settings still apply.
++  env.configure({ settings: { canvas: false } });
++  assert.equal(width(), METRICS.width, 'valid boolean settings still apply');
++  // Malformed pause shapes cannot toggle the flag; real ones do.
++  dispatch(JSON.stringify({ allowlisted: { weird: 1 } }));
++  assert.equal(width(), METRICS.width, 'non-boolean pause shape is ignored');
++  env.configure({ settings: { canvas: true } });
++  env.configure({ allowlisted: false });
++  assert.equal(width(), baseline, 'flag-based resume re-arms the sealed persona');
++  env.configure({ allowlisted: true });
++  assert.equal(width(), METRICS.width, 'pausing is a pure flag: native passthrough');
+ });
+ 
+ test('experimental Math rounding does not change canvas/rect noise or locale formatting', () => {
+diff --git a/test/lockdown-ui.test.cjs b/test/lockdown-ui.test.cjs
+index 80117e3..66d9faa 100644
+--- a/test/lockdown-ui.test.cjs
++++ b/test/lockdown-ui.test.cjs
+@@ -90,7 +90,7 @@ test('options lists paused origins and resumes one without changing global setti
+   assert.equal(env.state.data.settings.lockScripts, true);
+   assert.equal(env.state.data.settings.canvas, false);
+   assert.ok(env.state.messages.some(msg => msg.type === 'removeAllowlist' && msg.origin === 'https://first.test'));
+-  assert.match(env.nodes.saved.textContent, /API patches resumed.*reload affected tabs/);
++  assert.match(env.nodes.saved.textContent, /Pause.resume applied to open pages/);
+   assert.equal(env.nodes.saved.classList.contains('show'), true);
+ });
+ 
+diff --git a/test/lockdown.test.cjs b/test/lockdown.test.cjs
+index 738eaf1..6ca27fa 100644
+--- a/test/lockdown.test.cjs
++++ b/test/lockdown.test.cjs
+@@ -151,14 +151,23 @@ function setup(options = {}) {
+     if (step instanceof Error) throw step;
+     if (typeof step === 'function') await step();
+   }
++  const sharedSession = options.session || {};
++  let accessLevelCalls = 0;
+   const browser = {
+     runtime: { id: UI.id, getURL: path => 'moz-extension://unit/' + path,
+       onMessage: { addListener: fn => { events.message = fn; } },
+       onInstalled: { addListener: fn => { events.installed = fn; } } },
+-    storage: { local: {
+-      async get(key) { await operation('get', { key }); return { [key]: clone(state[key] ?? {}) }; },
+-      async set(value) { await operation('set', value); Object.assign(state, clone(value)); writes.push(clone(value)); }
+-    } },
++    storage: {
++      local: {
++        async get(key) { await operation('get', { key }); return { [key]: clone(state[key] ?? {}) }; },
++        async set(value) { await operation('set', value); Object.assign(state, clone(value)); writes.push(clone(value)); }
++      },
++      session: {
++        async get(key) { return { [key]: clone(sharedSession[key]) }; },
++        async set(value) { Object.assign(sharedSession, clone(value)); },
++        async setAccessLevel() { accessLevelCalls++; }
++      }
++    },
+     declarativeNetRequest: {
+       async getDynamicRules() { await operation('getDynamicRules'); return clone(state.dynamic); },
+       async getEnabledRulesets() { await operation('getEnabledRulesets'); return [...state.enabled]; },
+@@ -178,11 +187,19 @@ function setup(options = {}) {
+       onUpdated: { addListener: fn => { events.updated = fn; } } },
+     action: { async setBadgeText() {}, async setBadgeBackgroundColor() {} }
+   };
+-  const context = vm.createContext({ browser, URL });
++  const context = vm.createContext({
++    browser, URL,
++    // The event page generates its session salt with the platform CSPRNG.
++    crypto: { getRandomValues(bytes) {
++      for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
++      return bytes;
++    } }
++  });
+   vm.runInContext(core, context);
+   vm.runInContext(background, context);
+   const send = (msg, sender = UI) => events.message(msg, sender);
+   return { state, calls, writes, events, failures, send,
++    session: sharedSession, accessLevelCalls: () => accessLevelCalls,
+     ready: () => send({ type: 'popupData' }), settings: patch => send({ type: 'setSettings', settings: patch }) };
+ }
+ 
+@@ -302,7 +319,9 @@ test('concurrent enables and emergency off are serialized with no lost updates',
+ 
+ for (const name of ['updateDynamicRules', 'updateEnabledRulesets', 'set']) {
+   test(`${name} rejection cannot report a saved lockdown or leave partial policy silently`, async () => {
+-    const env = setup();
++    // netBlock starts on so the initial reconcile keeps the static ruleset
++    // enabled and the injected failure happens mid-commit.
++    const env = setup({ settings: { netBlock: true } });
+     await env.ready();
+     env.failures[name] = [new Error('simulated failure')];
+     const result = await env.settings({ ...all, netBlock: false });
+@@ -364,3 +383,33 @@ test('failed live notification is reported as a warning after a successful polic
+   assert.equal(env.state.settings.lockScripts, true);
+   assert.equal((await env.ready()).policyStatus.state, 'synced');
+ });
++
++test('session salt is one 64-hex value per browser session, shared across event-page restarts', async () => {
++  const session = {};
++  const first = setup({ session });
++  await first.ready();
++  assert.match(first.session.fpdSession.salt, /^[0-9a-f]{64}$/);
++  assert.equal(first.session.fpdSession.settings.netBlock, false, 'snapshot carries the shipped profile');
++  assert.ok(first.accessLevelCalls() >= 1, 'content-script access level is requested');
++  const restarted = setup({ session });
++  await restarted.ready();
++  assert.equal(restarted.session.fpdSession.salt, first.session.fpdSession.salt,
++    'salt survives event-page restarts within a session');
++});
++
++test('session snapshot mirrors settings and allowlist changes before broadcast', async () => {
++  const env = setup({ session: {} });
++  await env.ready();
++  await env.send({ type: 'toggleAllowlist', origin: 'https://snap.test' });
++  assert.ok(env.session.fpdSession.allowlist.includes('https://snap.test'));
++  const salt = env.session.fpdSession.salt;
++  assert.equal((await env.settings({ notify: true })).ok, true);
++  assert.equal(env.session.fpdSession.settings.notify, true);
++  assert.equal(env.session.fpdSession.salt, salt, 'salt unchanged by settings writes');
++  assert.ok(policy.keys.every(key => !Object.hasOwn(env.session.fpdSession.settings, key)),
++    'lockdown keys excluded from the public snapshot');
++  const cfg = await env.send({ type: 'getConfig' }, { ...UI, url: 'https://snap.test/' });
++  assert.equal(cfg.allowlisted, true);
++  assert.equal(cfg.settings.notify, true);
++  assert.equal(cfg.salt, salt);
++});
+diff --git a/test/passive-math.test.cjs b/test/passive-math.test.cjs
+index 6297a37..a4a6132 100644
+--- a/test/passive-math.test.cjs
++++ b/test/passive-math.test.cjs
+@@ -513,16 +513,24 @@ test('permission change events and listener removal stay native while their stat
+   })()`), true);
+ });
+ 
+-test('notification requests obey pushGuard independently of passive permission masking', async () => {
++test('notification requests obey notify (activation-gated) independently of passive permission masking', async () => {
+   const env = setup();
+-  assert.equal(await env.evaluate("Notification.requestPermission().then(value => value === 'default' && Notification.requests === 0)"), true);
+-  env.configure({ settings: { pushGuard: false, permissionStates: true } });
++  // notify is off by default since v1.2.0: requests stay native.
++  assert.equal(await env.evaluate("Notification.requestPermission().then(value => value === 'granted' && Notification.requests === 1)"), true);
++  env.configure({ settings: { notify: true, permissionStates: true } });
++  // Unsolicited requests resolve "default" without a dialog and without
++  // reaching the native prompt implementation.
++  assert.equal(await env.evaluate("Notification.requestPermission().then(value => value === 'default' && Notification.requests === 1)"), true);
++  // Requests following transient user activation still prompt natively.
++  env.evaluate('navigator.userActivation = { isActive: true };');
+   assert.equal(await env.evaluate(`(async () => {
+     let callbackValue;
+     const result = await Notification.requestPermission(value => { callbackValue = value; });
+-    return result === 'granted' && callbackValue === 'granted' && Notification.requests === 1 &&
++    return result === 'granted' && callbackValue === 'granted' && Notification.requests === 2 &&
+       Notification.permission === 'default';
+   })()`), true);
++  env.configure({ settings: { notify: false, permissionStates: true } });
++  assert.equal(await env.evaluate("Notification.requestPermission().then(value => value === 'granted')"), true);
+ });
+ 
+ test('Math rounding is stable and bounded across all covered functions', () => {
+@@ -627,31 +635,59 @@ test('new activity counts contain counts only and respect the stats setting', as
+   assert.deepEqual(env.stats(), { speechVoices: 1, mediaDevices: 1, permissionStates: 2, mathRounding: 1 });
+ });
+ 
+-test('allowlisting restores all new methods, descriptors and native Math behavior', async () => {
++test('pausing passes every surface through while hooks stay installed; resuming re-arms in place', async () => {
+   const env = setup();
+-  env.configure({ settings: { speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true, webrtc: true } });
+-  env.evaluate('globalThis.savedSin = Math.sin;');
++  env.configure({ settings: { speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true, webrtc: true, notify: true } });
++  env.evaluate(`globalThis.saved = {
++    voices: SpeechSynthesis.prototype.getVoices, devices: MediaDevices.prototype.enumerateDevices,
++    battery: Navigator.prototype.getBattery,
++    level: Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get,
++    state: Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get,
++    notification: Object.getOwnPropertyDescriptor(Notification, 'permission').get,
++    request: Notification.requestPermission,
++    hardware: Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get,
++    memory: Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get,
++    sld: RTCPeerConnection.prototype.setLocalDescription, offer: RTCPeerConnection.prototype.createOffer,
++    answer: RTCPeerConnection.prototype.createAnswer, stats: RTCPeerConnection.prototype.getStats,
++    onice: Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get,
++    listen: EventTarget.prototype.addEventListener, unlisten: EventTarget.prototype.removeEventListener
++  };`);
+   env.configure({ allowlisted: true });
+-  assert.equal(await env.evaluate(`(async () =>
+-    SpeechSynthesis.prototype.getVoices === native.voices && MediaDevices.prototype.enumerateDevices === native.devices &&
+-    Navigator.prototype.getBattery === native.battery &&
+-    Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get === native.batteryValues.level.get &&
+-    Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get === native.state.get &&
+-    Object.getOwnPropertyDescriptor(Notification, 'permission').get === native.notification.get &&
+-    Notification.requestPermission === native.request &&
+-    Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get === native.hardware.get &&
+-    Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get === native.memory.get &&
+-    RTCPeerConnection.prototype.setLocalDescription === native.rtc.setLocalDescription &&
+-    RTCPeerConnection.prototype.createOffer === native.rtc.createOffer &&
+-    RTCPeerConnection.prototype.createAnswer === native.rtc.createAnswer &&
+-    RTCPeerConnection.prototype.getStats === native.rtc.getStats &&
+-    Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get === native.rtc.onicecandidate.get &&
+-    EventTarget.prototype.addEventListener === native.rtc.addEventListener &&
+-    EventTarget.prototype.removeEventListener === native.rtc.removeEventListener &&
+-    Math.sin === native.math.sin && savedSin(1) === native.math.sin(1) &&
+-    (await navigator.mediaDevices.enumerateDevices()).length === 3
+-  )()`), true);
++  assert.equal(await env.evaluate(`(async () => {
++    const kept = saved.voices === SpeechSynthesis.prototype.getVoices && saved.devices === MediaDevices.prototype.enumerateDevices &&
++      saved.battery === Navigator.prototype.getBattery &&
++      saved.level === Object.getOwnPropertyDescriptor(BatteryManager.prototype, 'level').get &&
++      saved.state === Object.getOwnPropertyDescriptor(PermissionStatus.prototype, 'state').get &&
++      saved.notification === Object.getOwnPropertyDescriptor(Notification, 'permission').get &&
++      saved.request === Notification.requestPermission &&
++      saved.hardware === Object.getOwnPropertyDescriptor(Navigator.prototype, 'hardwareConcurrency').get &&
++      saved.memory === Object.getOwnPropertyDescriptor(Navigator.prototype, 'deviceMemory').get &&
++      saved.sld === RTCPeerConnection.prototype.setLocalDescription && saved.offer === RTCPeerConnection.prototype.createOffer &&
++      saved.answer === RTCPeerConnection.prototype.createAnswer && saved.stats === RTCPeerConnection.prototype.getStats &&
++      saved.onice === Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'onicecandidate').get &&
++      saved.listen === EventTarget.prototype.addEventListener && saved.unlisten === EventTarget.prototype.removeEventListener;
++    const unrestored = saved.voices !== native.voices && saved.devices !== native.devices &&
++      saved.battery !== native.battery && saved.state !== native.state.get &&
++      saved.notification !== native.notification.get && saved.request !== native.request &&
++      saved.sld !== native.rtc.setLocalDescription && saved.listen !== native.rtc.addEventListener;
++    const nativeBehavior =
++      speechSynthesis.getVoices() === speechSynthesis.voices &&
++      (await navigator.mediaDevices.enumerateDevices()) === navigator.mediaDevices.devices &&
++      (await navigator.getBattery()) === navigator.battery &&
++      navigator.permissions.statuses.geolocation.state === 'granted' &&
++      Notification.permission === 'granted' &&
++      navigator.hardwareConcurrency === 12 && navigator.deviceMemory === 16 &&
++      Math.sin === native.math.sin && Math.sin(1) === native.math.sin(1) &&
++      (await Notification.requestPermission()) === 'granted';
++    return kept && unrestored && nativeBehavior;
++  })()`), true, 'paused: hooks installed but every read and request is native');
+   env.configure({ allowlisted: false });
+-  assert.equal(env.evaluate('Math.sin === native.math.sin && savedSin(1) === native.math.sin(1)'), true,
+-    'after full restoration, reload is required to install hooks again');
++  assert.equal(await env.evaluate(`(async () =>
++    saved.voices === SpeechSynthesis.prototype.getVoices &&
++    saved.battery === Navigator.prototype.getBattery && saved.request === Notification.requestPermission &&
++    Math.sin !== native.math.sin && Math.sin(1) !== native.math.sin(1) &&
++    speechSynthesis.getVoices().length === 0 &&
++    (await navigator.mediaDevices.enumerateDevices()).length === 0 &&
++    (await Notification.requestPermission()) === 'default'
++  )()`), true, 'resume re-arms the still-installed hooks in place');
+ });
