@@ -157,8 +157,8 @@ loud, unique signal. Observed behaviour:
 ```
 site A, reload 1       806dd20d
 site A, reload 2       806dd20d   <- stable, as intended
-site B, same session   b8589a2d   <- cross-site linking broken
-site A, next session   18a9f38d   <- rotates, long-term linking broken
+site B, same session   b8589a2d   <- this damped value differs across origins
+site A, next session   18a9f38d   <- rotates, long-term linking through this surface reduced
 real canvas            ada5b8c5
 ```
 

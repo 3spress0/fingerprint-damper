@@ -94,8 +94,12 @@ policy it received and need reloading. “Rules configured” confirms configura
 - Files, extension/internal pages, data/blob documents and inherited-policy edge
   cases are not blanket-covered by the HTTP response rule. No OS sandbox, proxy,
   VPN, certificate installation or wholesale browser privacy policy is supplied.
-- Native Firefox verification is still required. The Node tests model rule generation,
-  configuration failure/rollback and UI behavior—not actual CSP or network enforcement.
+- Native Firefox enforcement of these rules was verified on 2026-09-10 in
+  Firefox 155.0.1 (headless, Marionette-driven): all nine controls blocked or
+  rewrote the targeted behavior, and every control recovered cleanly after
+  turn-off. The Node tests still cover rule generation, configuration
+  failure/rollback and UI behavior. A manual pass in a GUI profile remains
+  recommended before wide release.
 
 ## Verification / references
 

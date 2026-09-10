@@ -5,7 +5,7 @@
 <h1 align="center">Fingerprint Damper</h1>
 
 <p align="center">
-  <em>API-level anti-fingerprinting for Firefox.<br>Stable, deterministic damping rather than per-call randomization.</em>
+  <em>API-level fingerprint damping for Firefox.<br>Stable, deterministic damping rather than per-call randomization.</em>
 </p>
 
 <p align="center">
@@ -90,14 +90,17 @@ recovery: [docs/lockdown.md](docs/lockdown.md). **Native Firefox validation is p
 
 ## Install
 
-Requires **Firefox 142+**. Not signed, so pick one:
+Requires **Firefox 142+**.
 
+- **Normal permanent installation:** install a Mozilla-signed XPI. Signing is available through
+  AMO for either public listing or self-distribution (self-distribution is free and does not
+  require a public listing).
+- **Unsigned development installation:** Firefox Developer Edition, Nightly, or ESR may permit
+  unsigned extensions after setting `xpinstall.signatures.required` to `false` in `about:config`,
+  then installing this folder's `manifest.json` or the repo-root `.xpi` via `about:addons` →
+  gear → *Install Add-on From File*. This path is intended for development and testing.
 - **Temporary** (survives until restart): `about:debugging#/runtime/this-firefox` → *Load
   Temporary Add-on…* → select `manifest.json` in this folder.
-- **Permanent:** Developer Edition, Nightly or ESR only. Set `xpinstall.signatures.required` to
-  `false` in `about:config`, then install the `.xpi` at the repo root via `about:addons` → gear →
-  *Install Add-on From File*. Release Firefox enforces signing; for that, submit to AMO
-  (self-distribution signing is free and doesn't require public listing).
 
 ## Build and test
 

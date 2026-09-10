@@ -15,13 +15,17 @@ salt used to derive stable damping seeds.
 
 ## Why `<all_urls>` and MAIN-world injection are required
 
-Both protections need to be in place before any page script runs:
+The API wrappers must be installed at `document_start`, before ordinary page
+scripts read the affected JavaScript APIs. The optional lockdown tier operates
+separately through browser-managed declarativeNetRequest rules, which must be
+configured before the relevant requests and document responses occur.
 
 - The API patches (`src/inject.js`) must run in the page's own JavaScript realm
   (`"world": "MAIN"`) to replace `Navigator`/`CanvasRenderingContext2D`/etc. behaviour that
   page scripts read. There is no non-MAIN-world way to patch page-visible getters.
-- The lockdown tier (`src/lockdown.js`, background-only) installs `declarativeNetRequest`
-  rules on document responses; broad host access is required for header modification on any
+- The lockdown tier (`src/lockdown.js`, background-only) configures
+  `declarativeNetRequest` rules evaluated by the browser on document responses and
+  subrequests; broad host access is required for header modification on any
   HTTP(S) document the user visits.
 
 Host permissions are `<all_urls>` (required for MAIN-world injection on any page and for
