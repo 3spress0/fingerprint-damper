@@ -1,0 +1,904 @@
+diff --git a/README.md b/README.md
+index e81a99b..b1cc8d9 100644
+--- a/README.md
++++ b/README.md
+@@ -5,7 +5,7 @@
+ <h1 align="center">Fingerprint Damper</h1>
+ 
+ <p align="center">
+-  <em>API-level anti-fingerprinting for Firefox.<br>Stable, deterministic damping rather than per-call randomization.</em>
++  <em>API-level fingerprint damping for Firefox.<br>Stable, deterministic damping rather than per-call randomization.</em>
+ </p>
+ 
+ <p align="center">
+@@ -90,14 +90,17 @@ recovery: [docs/lockdown.md](docs/lockdown.md). **Native Firefox validation is p
+ 
+ ## Install
+ 
+-Requires **Firefox 142+**. Not signed, so pick one:
++Requires **Firefox 142+**.
+ 
++- **Normal permanent installation:** install a Mozilla-signed XPI. Signing is available through
++  AMO for either public listing or self-distribution (self-distribution is free and does not
++  require a public listing).
++- **Unsigned development installation:** Firefox Developer Edition, Nightly, or ESR may permit
++  unsigned extensions after setting `xpinstall.signatures.required` to `false` in `about:config`,
++  then installing this folder's `manifest.json` or the repo-root `.xpi` via `about:addons` →
++  gear → *Install Add-on From File*. This path is intended for development and testing.
+ - **Temporary** (survives until restart): `about:debugging#/runtime/this-firefox` → *Load
+   Temporary Add-on…* → select `manifest.json` in this folder.
+-- **Permanent:** Developer Edition, Nightly or ESR only. Set `xpinstall.signatures.required` to
+-  `false` in `about:config`, then install the `.xpi` at the repo root via `about:addons` → gear →
+-  *Install Add-on From File*. Release Firefox enforces signing; for that, submit to AMO
+-  (self-distribution signing is free and doesn't require public listing).
+ 
+ ## Build and test
+ 
+diff --git a/docs/amo-review-notes.md b/docs/amo-review-notes.md
+index 4fbb00d..e2c9e99 100644
+--- a/docs/amo-review-notes.md
++++ b/docs/amo-review-notes.md
+@@ -15,13 +15,17 @@ salt used to derive stable damping seeds.
+ 
+ ## Why `<all_urls>` and MAIN-world injection are required
+ 
+-Both protections need to be in place before any page script runs:
++The API wrappers must be installed at `document_start`, before ordinary page
++scripts read the affected JavaScript APIs. The optional lockdown tier operates
++separately through browser-managed declarativeNetRequest rules, which must be
++configured before the relevant requests and document responses occur.
+ 
+ - The API patches (`src/inject.js`) must run in the page's own JavaScript realm
+   (`"world": "MAIN"`) to replace `Navigator`/`CanvasRenderingContext2D`/etc. behaviour that
+   page scripts read. There is no non-MAIN-world way to patch page-visible getters.
+-- The lockdown tier (`src/lockdown.js`, background-only) installs `declarativeNetRequest`
+-  rules on document responses; broad host access is required for header modification on any
++- The lockdown tier (`src/lockdown.js`, background-only) configures
++  `declarativeNetRequest` rules evaluated by the browser on document responses and
++  subrequests; broad host access is required for header modification on any
+   HTTP(S) document the user visits.
+ 
+ Host permissions are `<all_urls>` (required for MAIN-world injection on any page and for
+diff --git a/docs/coverage.md b/docs/coverage.md
+index 3be86f6..fcc2842 100644
+--- a/docs/coverage.md
++++ b/docs/coverage.md
+@@ -157,8 +157,8 @@ loud, unique signal. Observed behaviour:
+ ```
+ site A, reload 1       806dd20d
+ site A, reload 2       806dd20d   <- stable, as intended
+-site B, same session   b8589a2d   <- cross-site linking broken
+-site A, next session   18a9f38d   <- rotates, long-term linking broken
++site B, same session   b8589a2d   <- this damped value differs across origins
++site A, next session   18a9f38d   <- rotates, long-term linking through this surface reduced
+ real canvas            ada5b8c5
+ ```
+ 
+diff --git a/docs/lockdown.md b/docs/lockdown.md
+index cbac566..4617688 100644
+--- a/docs/lockdown.md
++++ b/docs/lockdown.md
+@@ -94,8 +94,12 @@ policy it received and need reloading. “Rules configured” confirms configura
+ - Files, extension/internal pages, data/blob documents and inherited-policy edge
+   cases are not blanket-covered by the HTTP response rule. No OS sandbox, proxy,
+   VPN, certificate installation or wholesale browser privacy policy is supplied.
+-- Native Firefox verification is still required. The Node tests model rule generation,
+-  configuration failure/rollback and UI behavior—not actual CSP or network enforcement.
++- Native Firefox enforcement of these rules was verified on 2026-09-10 in
++  Firefox 155.0.1 (headless, Marionette-driven): all nine controls blocked or
++  rewrote the targeted behavior, and every control recovered cleanly after
++  turn-off. The Node tests still cover rule generation, configuration
++  failure/rollback and UI behavior. A manual pass in a GUI profile remains
++  recommended before wide release.
+ 
+ ## Verification / references
+ 
+diff --git a/v1.2.0-blockerfixes.patch b/v1.2.0-blockerfixes.patch
+deleted file mode 100644
+index 0f9aa5e..0000000
+--- a/v1.2.0-blockerfixes.patch
++++ /dev/null
+@@ -1,803 +0,0 @@
+-diff --git a/README.md b/README.md
+-index 6957a9f..b1cc8d9 100644
+---- a/README.md
+-+++ b/README.md
+-@@ -5,7 +5,7 @@
+- <h1 align="center">Fingerprint Damper</h1>
+- 
+- <p align="center">
+--  <em>API-level anti-fingerprinting for Firefox.<br>Stable, deterministic damping rather than per-call randomization.</em>
+-+  <em>API-level fingerprint damping for Firefox.<br>Stable, deterministic damping rather than per-call randomization.</em>
+- </p>
+- 
+- <p align="center">
+-@@ -19,36 +19,18 @@
+- 
+- ---
+- 
+--Ad blockers work at the **network layer** — they stop a request being made. This works at the
+--**API layer** by default — it changes what a script reads once it is running. An additional,
+--**default-off global lockdown tier** uses browser-enforced network/CSP rules to deny execution
+--and requests rather than spoof values.
+--
+--That gap is not theoretical. It came out of a live teardown of a YouTube-converter site whose
+--deobfuscated PropellerAds SDK was found reading GPU model, battery level, screen geometry,
+--timezone and window position through ordinary DOM calls — none of which an ad blocker can prevent
+--once the script has loaded. This extension targets exactly those surfaces.
+--
+--**v1.2.0 status:** hardening release. The page/extension config channel validates message
+--structure, seals its initial salt and never uninstalls hooks; pause is a pass-through flag
+--(because the channel stays page-visible, hostile page code can still request native pass-through
+--on its own page — see Honest limitations). Cryptographic per-browser-session salt stored in
+--`storage.session` (background-only), settings reconciled through a runtime round trip at
+--`document_start`, safer defaults (audio, geometry, notification blocking, service-worker blocking
+--and network blocking are now opt-in), byte-reproducible packaging (`./package.sh`, gated by
+--`scripts/amocheck.sh`). Run `node --test test/*.test.cjs` — 107/107 tests pass. The packaged XPI
+--lives at the repo root (filename tracks `manifest.json`'s version; `*.xpi` is git-ignored).
+--
+-----
+-+## Purpose
+- 
+--## Why this isn't redundant with uBlock Origin + Privacy Badger
+--
+--A script gets through your blockers all the time: because it's first-party, because it isn't on a
+--filter list yet, because the operator rotated to a fresh domain, or because you allowlisted the
+--site to make it work. At that point the network layer has had its say and the fingerprint is taken
+--anyway. This picks up from there.
+-+Ad blockers work at the **network layer** — they stop a request being made. This works at the
+-+**API layer** — it changes what a script reads once it is running. That gap is not theoretical:
+-+it came out of a live teardown of a YouTube-converter site whose deobfuscated PropellerAds SDK
+-+read GPU model, battery level, screen geometry, timezone and window position through ordinary DOM
+-+calls — none of which an ad blocker can prevent once the script has loaded.
+- 
+--The three are complementary:
+-+This reduces passive fingerprinting by ordinary scripts. The page-level wrappers are detectable
+-+and can be bypassed or switched to pass-through by adversarial page code — see
+-+[Main limitations](#main-limitations). A separate, **default-off global lockdown tier** uses
+-+browser-enforced network/CSP rules instead of spoofed values.
+- 
+- | Layer | Tool | Job |
+- |---|---|---|
+-@@ -56,314 +38,150 @@ The three are complementary:
+- | Network | Privacy Badger | Heuristically learns third parties that track across sites |
+- | **API** | **this** | **Changes what a script that got through is able to read** |
+- 
+--There is a small deliberate overlap: a `declarativeNetRequest` ruleset blocks the specific
+--PropellerAds/RTMark hosts found in the teardown plus a reviewed snapshot of public ad-network
+--lists. It is deliberately much narrower than a general-purpose ad blocker and keeps the
+--source-derived entries third-party-only to limit breakage.
+--
+-----
+--
+--## The design rules
+--
+--Naive anti-fingerprinting breaks the web and, worse, makes you *more* identifiable. Four rules
+--keep this usable:
+--
+--**1. Consistency, not randomness.** Values derive from a seed of `origin + date + session salt`, so
+--a site sees one stable persona. Randomising per call breaks image editors and audio tools, and a
+--value that changes on every read is itself a loud, unique signal. Verified:
+--
+--```
+--site A, reload 1       806dd20d
+--site A, reload 2       806dd20d   <- stable, as intended
+--site B, same session   b8589a2d   <- cross-site linking broken
+--site A, next session   18a9f38d   <- rotates, long-term linking broken
+--real canvas            ada5b8c5
+--```
+--
+--**2. Blend into the biggest crowd.** WebGL vendor/renderer/version fields are reported as
+--`Mozilla` / the matching WebGL version, and its debug-renderer extension is withheld — following
+--the broad persona Firefox's own `resistFingerprinting` uses. Inventing a unique fake GPU would
+--make you a population of one.
+--
+--**3. Some things are deliberately left alone.** `navigator.plugins` and `maxTouchPoints` are
+--untouched. The SDK we analysed used `plugins.length === 0` as a *headless-bot* signal — emptying it
+--would flag you as a bot and get you served differently. Screen resolution stays real too, because
+--quantising it is a genuine responsive-layout breakage risk. Restraint is a feature.
+--
+--**4. Higher-breakage protections are opt-in.** ClientRects, locale/timezone changes, WebRTC,
+--passive-list/state masking, and experimental Math rounding are off by default and carry warnings.
+--Even the default protections can affect some sites; the per-site pause is the escape hatch.
+-+**Design rules:** (1) one stable persona per origin per day — per-call randomness is itself a
+-+signal; (2) blend into the biggest crowd rather than inventing unique fake values; (3) leave
+-+bot-detection surfaces like `navigator.plugins` alone — emptying them flags you; (4) anything with
+-+real breakage risk is opt-in. Full rationale and per-surface detail:
+-+[docs/coverage.md](docs/coverage.md).
+- 
+- ---
+- 
+--## What it does
+--
+--### On by default (low breakage risk)
+-+## Default protections (on by default)
+- 
+- | Protection | Behaviour |
+- |---|---|
+--| Canvas / text metric noise | Up to 32 RGB low-bit flips on pixel readback/serialization (max channel delta 1/255), including main-thread `OffscreenCanvas`. The noise step is O(32); serialization needs a copy and skips canvases over 4 MP. `measureText()` fields get stable <0.01px jitter. This changes exact hashes, not reliable font-availability tests. |
+--| WebGL identity / readback | Vendor, renderer and matching version strings → `Mozilla` / `WebGL 1.0` or `2.0`; `WEBGL_debug_renderer_info` is hidden. Standard RGBA/UNSIGNED_BYTE `readPixels()` receives stable, low-bit RGB noise. Other WebGL capabilities, shader behavior, non-byte formats and PBO readback remain native. |
+--| Hardware capacity | `hardwareConcurrency` → 8 and, only if the browser already exposes it, `deviceMemory` → 8. No API is invented; worker navigators remain native. |
+--| Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell when its getters are patchable; native failures remain failures. Level plus discharge time is a startlingly good short-term cross-site correlator. |
+-+| Canvas / text metric noise | Up to 32 RGB low-bit flips on pixel readback/serialization, plus stable <0.01px `measureText()` jitter, including main-thread `OffscreenCanvas`. Changes exact hashes, not reliable font-availability tests. |
+-+| WebGL identity / readback | Vendor/renderer/version → `Mozilla` / matching WebGL version; `WEBGL_debug_renderer_info` hidden; stable low-bit noise on standard byte `readPixels()`. Other capability surfaces remain native. |
+-+| Hardware capacity | `hardwareConcurrency` → 8 and, only where already exposed, `deviceMemory` → 8. No API is invented. |
+-+| Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell. |
+- 
+--Everything else in this extension is opt-in (below). Since v1.2.0 the shipped profile only
+--includes fingerprint damping with a low breakage risk; controls that touch application data,
+--prompts, workers or the network must be switched on explicitly.
+-+## Optional protections (off by default)
+- 
+--### Opt-in (off by default)
+-+Everything below must be switched on explicitly in Settings; each carries a breakage warning.
+- 
+--| Protection | Behaviour and trade-off |
+-+| Protection | One-line trade-off |
+- |---|---|
+--| Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. That array is the buffer's real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing. Off by default for that reason. |
+--| Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. Off by default. |
+--| Block notification permission prompts | `Notification.requestPermission()` resolves `"default"` with **no dialog** — but only for requests that do not follow transient user activation; requests made right after a deliberate click still prompt normally. `"default"` reads as *the user dismissed it*, which is commonplace and unremarkable. Off by default. |
+--| Block ad service workers (experimental) | Rejects service-worker registrations whose host labels or script path match known ad-SDK patterns. Boundary-aware matching (host labels / path tokens), never raw substring tests. Off by default; pattern matching can hit unrelated apps — use the per-site pause as a bypass. |
+--| Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). The 64 newly added source-derived domains apply only to third-party requests. See [source notice and pinned snapshot](rules/NOTICE.md). Off by default since v1.2.0. The blocklist **excludes `etacloud.org` and `tubeapi.org`** — those are the actual conversion backend in the y2mate teardown. |
+--| Hide speech voice list | `getVoices()` returns an empty array. Native default speech remains available, but voice pickers and some accessibility flows may break. No fake voices are created. |
+--| Hide media device list | Successful `enumerateDevices()` calls return an empty array, hiding enumerated labels, counts and IDs. Native errors and capture APIs remain unchanged. Camera/microphone/speaker pickers may break; this does **not** block capture. |
+--| Mask passive permission states | Native `PermissionStatus.state` reads report `prompt`; `Notification.permission` reports `default`. Real grants, explicit request results, query support/errors and events stay native. Sites may show redundant permission UI or disable features. |
+--| Reduce Math precision (experimental) | Rounds 12 low fraction bits of eligible transcendental/root/power results (added relative error roughly at most 4.55e-13). Special values, integers and subnormals stay native. Can break exact identities or numerical code; not a faithful or complete cross-engine Math replacement. Native Math functions are left untouched until opted in. |
+--| ClientRects damping | Stable sub-pixel changes to `Element` and `Range` `getBoundingClientRect()` / `getClientRects()`. Native `DOMRect`/`DOMRectList` objects, zero dimensions, and bounding/fragment relationships are preserved (within floating-point precision). No DOM layout is changed, but callers using these measurements for positioning, selection or hit-testing may break. |
+--| Default to `en-US` language / locale | Sets navigator language and normalises default locale selection in available `Intl` formatters, numeric/date `toLocale*` methods, string collation and locale-sensitive casing. Supported explicit locale choices and Unicode extensions remain native; empty/unsupported requests fall back to `en-US`. Sites may stop showing your language. |
+--| Default to UTC timezone | Uses UTC for default `Intl.DateTimeFormat` and date `toLocale*` formatting, plus zero timezone offsets. Output and `resolvedOptions()` agree. Explicit time zones remain native. Can break calendars, bookings and delivery estimates; other local-time `Date` APIs are not masked. |
+--| WebRTC address filtering | Withholds host, server-reflexive and peer-reflexive ICE candidates from events, SDP creation/local-description reads and local candidate stats; relay (TURN) paths stay available. While enabled, `getStats()` resolves to a map-shaped sanitized copy. May break peer-to-peer applications without TURN and changes diagnostics. |
+--
+--Locale/timezone settings affect **new formatters** and subsequent `toLocale*` calls. Already-created
+--formatter objects and already-returned measurement snapshots keep their values; reload after a
+--settings change to clear a site's cached objects. These controls reduce particular observations,
+--not all ways of inferring a machine's fonts, locale, or time zone. Previously returned voice/device
+--lists remain readable too. See [coverage and trust boundaries](docs/coverage.md) for the exact Math
+--surface, passive-API caveats and worker policy. TLS/HTTP-stack normalization remains out of scope;
+--selected HTTP headers can now be removed with the separate lockdown tier.
+--
+-----
+-+| Count activity for the popup | Toolbar badge counts. Adds a page-visible event channel; slightly easier to detect. Off by default for a quieter profile. |
+-+| Audio noise | Perturbs ~32 samples (1e-7) in `AudioBuffer.getChannelData`/`AnalyserNode`. Touches the buffer's real backing store; inaudible, but audio apps see tiny drift. |
+-+| Window geometry | Zeroes window position, flattens colour depth, outer = inner size. |
+-+| Block notification permission prompts | Unsolicited `requestPermission()` resolves `"default"` (dismissed); requests after a deliberate click still prompt. |
+-+| Block ad service workers (experimental) | Boundary-aware host/path pattern blocks on `ServiceWorkerContainer.register()`. Can hit unrelated apps; per-site pause is the bypass. |
+-+| Network block | Static DNR blocks 78 known ad/push-network domains (third-party-only for source-derived entries). Provenance: [rules/NOTICE.md](rules/NOTICE.md). |
+-+| Hide speech voice list | `getVoices()` returns empty; voice pickers may break. |
+-+| Hide media device list | `enumerateDevices()` returns empty; pickers may break. Does not block capture. |
+-+| Mask passive permission states | `PermissionStatus.state` → `prompt`, `Notification.permission` → `default`. Real grants stay real. |
+-+| Reduce Math precision (experimental) | Rounds 12 low fraction bits of transcendental/root/power results. Can break exact identities. |
+-+| ClientRects damping | Stable sub-pixel noise on `Element`/`Range` rects. Positioning/hit-testing may break. |
+-+| Default to `en-US` language / locale | Normalises default locale selection; explicit locales stay native. Sites may lose your language. |
+-+| Default to UTC timezone | UTC for default date formatting; explicit zones stay native. Calendars/bookings may misdate. |
+-+| WebRTC address filtering | Withholds non-relay ICE candidates from events/SDP/local stats; TURN paths remain. P2P without TURN may fail. |
+-+
+-+Per-surface behaviour, caveats and exact boundaries: [docs/coverage.md](docs/coverage.md).
+- 
+- ## Global lockdown — experimental, extreme breakage
+- 
+--All **nine controls are off by default**, separate from the existing API options:
+--
+--- Block site JavaScript (inline and external) instead of trying to emulate every API.
+--- Force a browser **opaque-origin document sandbox**, with no script/same-origin escape tokens and explicit anti-framing policy.
+--- Block new workers and service-worker registrations on covered documents.
+--- Block embedded frame/object loads.
+--- Block fetch/XHR, new WebSockets, beacons, pings and CSP reports.
+--- Text-only loading: block eligible secondary requests, scripts, media/fonts and external styling.
+--- Strip outgoing/incoming network cookies, without clearing existing browser data.
+--- Disable new HTTP cache writes and remove ETag/Last-Modified validators; it does not clear old or service-worker caches.
+--- Remove selected identity headers (UA, language, referrer, known UA client hints).
+--
+--These are **global kill switches**, including on API-paused sites. Settings has a confirmed
+--**Enable all lockdown controls** preset; Settings and the popup both have **Turn off all lockdown**.
+--Reload affected tabs (bypass cache) to apply/release CSP. No automatic tab reloads or data deletion.
+--
+--The browser enforces eligible rules outside the spoofable page-world event channel. Server CSP is
+--appended to, never replaced or weakened. This does **not** promise that a website gets nothing:
+--the initial request/IP/TLS, URLs, old contexts, stored data and cached/service-worker responses
+--remain concerns. It is not an OS sandbox, proxy or transport firewall. Use a fresh test profile.
+--See [lockdown controls, limits and recovery](docs/lockdown.md). **Native Firefox validation is pending.**
+-+Nine **default-off** browser-enforced network/CSP kill switches (block scripts, opaque-origin
+-+sandbox, block workers/embeds/connections, text-only loading, strip cookies, disable cache
+-+validators, remove identity headers). They apply globally — including on API-paused sites — are
+-+not an OS sandbox or transport firewall, and make many sites blank or static. Details, limits and
+-+recovery: [docs/lockdown.md](docs/lockdown.md). **Native Firefox validation is pending.**
+- 
+- ---
+- 
+- ## Install
+- 
+--Not signed, so pick one:
+--
+--**Temporary (survives until restart, no config change):**
+--1. `about:debugging#/runtime/this-firefox`
+--2. *Load Temporary Add-on…*
+--3. Select `manifest.json` in this folder.
+--
+--**Permanent:** requires Firefox Developer Edition, Nightly, or ESR. Set
+--`xpinstall.signatures.required` to `false` in `about:config`, then install the `.xpi` at the repo
+--root matching `manifest.json`'s version, from `about:addons` → gear → *Install Add-on From File*.
+--Release Firefox enforces signing with no override; for that you'd need to submit it to AMO
+--(self-distribution signing is free and doesn't require public listing).
+--
+--Requires **Firefox 142+** (`world: "MAIN"` content scripts landed in 128;
+--`data_collection_permissions` in 140; Android parity in 142).
+-+Requires **Firefox 142+**.
+- 
+--### Build the XPI
+-+- **Normal permanent installation:** install a Mozilla-signed XPI. Signing is available through
+-+  AMO for either public listing or self-distribution (self-distribution is free and does not
+-+  require a public listing).
+-+- **Unsigned development installation:** Firefox Developer Edition, Nightly, or ESR may permit
+-+  unsigned extensions after setting `xpinstall.signatures.required` to `false` in `about:config`,
+-+  then installing this folder's `manifest.json` or the repo-root `.xpi` via `about:addons` →
+-+  gear → *Install Add-on From File*. This path is intended for development and testing.
+-+- **Temporary** (survives until restart): `about:debugging#/runtime/this-firefox` → *Load
+-+  Temporary Add-on…* → select `manifest.json` in this folder.
+- 
+--From the repository root, run `./package.sh`. It stages exactly the shipped file set
+--(`manifest.json`, `src/`, `rules/`, `icons/`, `LICENSE`), runs the AMO-sensitive pattern gate
+--(`scripts/amocheck.sh`), and writes `fingerprint-damper-<version>.xpi` next to the manifest.
+--Output is byte-reproducible: entries are added in sorted order and staged timestamps are
+--normalised to `SOURCE_DATE_EPOCH` (or the release commit time, or a fixed epoch). Verify with:
+--build, `sha256sum` the XPI, delete it, build again, compare.
+--No transpilation, bundling, minification or code generation: the packaged files are the source
+--files. `./package.sh --check` additionally runs `npx web-ext lint` on the *staged* package. For a
+--quick local reload, `npx web-ext run` still works via `web-ext-config.cjs`.
+-+## Build and test
+- 
+-----
+--
+--## Verify it works
+--
+--Open `test/selftest.html` directly (`file://`) once with the extension off and once on, and compare.
+--It reads the same surfaces the ad SDK did and tags each one damped/exposed.
+-+```bash
+-+# Regression suite (dependency-free; Node 18+)
+-+node --test test/*.test.cjs
+- 
+--The important check is subtle: **reload twice with it on — the hashes must stay identical.** A hash
+--that changes every reload means the noise is per-call, which is worse than no protection.
+-+# Build the AMO-ready XPI (stages the shipped file set, runs the AMO gate)
+-+./package.sh            # or: ./package.sh --check  (also runs web-ext lint)
+-+```
+- 
+--For dependency-free automated regression tests (Node.js 18+), run
+--`node --test test/*.test.cjs`. These use DOM doubles, real Node Intl/Math, and isolated Node harnesses
+--for the diagnostic worker scripts (not Firefox's worker loader/CSP).
+--The new rule/settings/UI tests use mocked extension APIs, not native DNR enforcement.
+--`test/browser-regression.html` exercises the patches against real browser APIs with native
+--references captured first; open it with the installed extension **disabled**. See
+--[test/README.md](test/README.md) for locale-matrix commands, font-probe interpretation and the
+--remaining manual checks. The self-test includes WebGL byte readback, Element/Range hashes, actual
+--locale output, hardware capacity, voice/device counts, passive permission states, Math hashes, and
+--window/worker comparisons. Local-font and worker probes are explicitly labelled **unprotected**.
+--Worker loading may require
+--a local HTTP server; a failure or matching value is not proof of protection. The notification
+--request test now requires an explicit button click rather than running automatically.
+-+Packaging is byte-reproducible: sorted entry order, normalised timestamps
+-+(`SOURCE_DATE_EPOCH` → commit time → fixed epoch), no transpilation/bundling/minification — the
+-+packaged files are the source files. Verify by building twice and comparing `sha256sum`.
+-+Testing methodology and native-browser checklists: [test/README.md](test/README.md).
+- 
+--For lockdown, use the separate [HTTP fixture/checklist](test/README.md#global-lockdown-http-integration).
+--A file-based or JS-driven self-test cannot prove that scripts were blocked before execution.
+-+## Privacy statement
+- 
+-----
+-+The extension collects and transmits **no data**. Settings and paused-site origins are stored
+-+locally (`storage.local`); the browser-session salt lives in `storage.session`. There are no
+-+analytics, telemetry, remote filter downloads or network calls from the extension itself; the
+-+only network effect is the user-enabled DNR blocking rules. `manifest.json` declares `"data_collection_permissions": {"required": ["none"]}`.
+- 
+- ## Using it
+- 
+--Toolbar badge shows how many fingerprint reads were intercepted on the current page. Click for a
+--breakdown and a **Pause API patches on this site** button (per-origin, persists). Since v1.2.0,
+--pausing and resuming apply **live** to open pages: hooks stay installed and simply pass through to
+--native behaviour while paused — no tab reload is forced. A reload only helps if a page cached
+--earlier values. The badge counts page API reports, not DNR/network blocks. Settings also has a
+--**Paused sites** list: resume one origin, or confirm **Resume API patches on all sites**.
+--
+--API pause never disables the global ad-network switch or global lockdown. The Paused sites controls
+--only change that per-origin API list; they do not make global network/CSP rules permissive. If
+--lockdown breaks a site, turn off the relevant global switch or use **Turn off all lockdown**, then
+--reload. If removal fails, disable the extension in `about:addons`; the UI reports failures rather
+--than claiming success.
+--
+-----
+--
+--## Honest limitations
+--
+--- **Startup race.** The background stores the cryptographic browser-session salt in
+--  `storage.session`, preserving it across event-page restarts (Firefox supports `storage.session`
+--  in trusted extension contexts since 115; it does NOT expose it to content scripts, so there is
+--  no session-storage fast path). At `document_start`, the isolated bridge requests the current
+--  salt, settings and pause state from the background via a runtime message. Shipped defaults
+--  remain active until that asynchronous response arrives, so very early page reads may precede
+--  configuration reconciliation. This is a real seam, not an atomic browser policy.
+--- **The extension is detectable.** Wrappers look wrapped: the v1.2.0 release removed the
+--  `Function.prototype.toString` override and the `window.__fpdCloak` global. Empty lists, rounded
+--  Math results and other behaviour changes can identify protections or a settings combination.
+--  These controls reduce particular observations, not guarantee anonymity.
+--- **Page-world channels are not a security boundary.** The configuration and stats events are
+--  page-visible. The configuration listener validates message structure (known boolean keys only),
+--  seals its initial salt and never uninstalls hooks. Because it remains page-visible, hostile
+--  page code can still request native pass-through behavior on its own page by dispatching the
+--  config event with `allowlisted: true`; it cannot uninstall hooks, recover saved native
+--  references, or reach privileged storage/network rules. Noise values are deterministic from
+--  origin + date + salt; the salt rides the page-visible channel, so a page that knows the
+--  algorithm can in principle subtract the noise. Damping defeats fingerprinters that don't know
+--  about the extension, not adversarial page code. Also note: content scripts never run in worker
+--  globals, so canvas/audio fingerprinting performed inside a Web Worker is not damped at all.
+--  Turning off *Count activity* reduces stats traffic, but does not make those API hooks
+--  tamper-proof. The browser-enforced lockdown rules are separate; page events cannot change them.
+--- **Not a substitute for Tor Browser or full `resistFingerprinting`.** Those give a far larger
+--  anonymity set at a far higher usability cost. If you want the strongest available option in
+--  Firefox itself, `privacy.resistFingerprinting` exists — it will break more, and this extension
+--  is largely redundant alongside it.
+--- **Installed-font availability is not hidden.** `FontFace`/CSS `local()` loading and ordinary
+--  font selection remain native. `document.fonts` iterates document-managed faces, not the whole
+--  installed-font list; `check()` can return `true` for nonexistent families, so it is not itself
+--  an installed-font oracle. [1](https://developer.mozilla.org/en-US/docs/Web/API/FontFaceSet/check)
+--  Tiny text-metric/ClientRects jitter changes exact hashes, but rounding, tolerance-based probes,
+--  and other layout measurements can still identify fonts. The diagnostics do not imply protection.
+--- **Intl engine data is not standardised.** The locale option changes default locale selection,
+--  not ICU/CLDR versions, `Intl.Locale`, static capability queries or results for supported explicit
+--  locales. Native local-time `Date` methods such as `toString()` and `getHours()` can still reveal
+--  the time zone even when the UTC option is on.
+--- **Worker and worklet globals are unprotected.** Content scripts run in window realms, not
+--  dedicated/shared/service workers or worklets. Any relevant API exposed in those globals — for
+--  example OffscreenCanvas/WebGL, worker font APIs, Intl or worker navigator fields — bypasses the
+--  window patches. The default remains native execution, but the new opt-in CSP worker/script
+--  blocks can deny new workers on covered documents; they do not normalize worker APIs or stop
+--  existing workers. Not every window API exists in a worker. No `Worker` constructor shim is used:
+--  a partial bootstrap would not close the gap and could break CSP, module loading or worker
+--  identity/lifecycle semantics. Broader coverage needs a different architecture or browser-level
+--  protections, not another window-prototype patch.
+--- **Passive masking is not capability control.** Voice/device lists can be hidden, but cached
+--  objects, native change-event timing, real capture/track APIs and explicit permission outcomes
+--  remain available. Permission support/errors remain observable. The Push guard controls
+--  notification requests independently from passive permission-state masking.
+--- **Battery masking is value masking, not battery isolation.** Where the browser exposes patchable
+--  `BatteryManager` getters, the native manager identity/events remain so compatibility is preserved;
+--  event timing and saved native getters can still reveal changes. Native rejections stay rejections.
+--  With the battery switch off, `getBattery()` returns its native result instead of an extension-made
+--  error.
+--- **WebGL and capacity masking are partial.** The standard byte-array `readPixels()` path is damped,
+--  but shader precision, limits, extensions other than debug-renderer info, non-byte/PBO readback and
+--  worker/OffscreenCanvas WebGL remain native. `deviceMemory` is masked only when it already exists;
+--  no worker navigator is altered.
+--- **WebRTC filtering is page-world compatibility masking, not transport isolation.** It cannot
+--  retract an address exposed before injection or through a saved native reference, block browser
+--  transport itself, or make latency/network characteristics anonymous. The opt-in sanitizes local
+--  candidate fields in returned stats but changes `getStats()` report identity; remote candidates and
+--  the broader WebRTC API remain native.
+--- **Math rounding is experimental, not engine standardisation.** Exact identities and numerical
+--  algorithms can change. Arithmetic operators, WebAssembly, unpatched globals and rounding-boundary
+--  differences remain available to probes. It is deliberately off by default.
+--- **Cache lockdown is not storage cleanup or a service-worker bypass.** It removes validators and
+--  sets `Cache-Control: no-store` only on eligible responses after the rule is active. Existing HTTP
+--  cache entries, BFCache, service-worker caches and URL identifiers remain outside its control.
+--- **TLS/HTTP-stack fingerprinting remains outside scope.** Optional removal of selected HTTP
+--  headers is not transport normalization. Page-world hooks cannot control the TLS
+--  ClientHello or HTTP/2 stack/header order. An ordinary pass-through VPN/SOCKS/CONNECT proxy does not
+--  replace the browser's TLS handshake. No proxy, CA trust or certificate-validation changes are
+--  made; see [the transport boundary](docs/coverage.md#tls--http-no-implementation-in-this-layer).
+--
+-----
+-+- Toolbar badge (opt-in via *Count activity*): intercepted fingerprint reads on the current page.
+-+- Popup: per-page breakdown and **Pause/Resume API patches on this site** (per-origin, persists,
+-+  applies live to open pages). Settings → **Paused sites** manages the same list.
+-+- API pause never disables the network block or global lockdown; those are separate switches.
+-+- If anything breaks a site: pause that origin first; for lockdown, use **Turn off all lockdown**,
+-+  then reload. The UI reports failures rather than claiming success.
+-+
+-+## Main limitations
+-+
+-+- **Startup race:** the bridge fetches salt/settings/pause state from the background at
+-+  `document_start`; shipped defaults apply until that asynchronous response arrives, so very early
+-+  reads can precede reconciliation. Not an atomic browser policy.
+-+- **Detectable:** wrappers look wrapped; empty lists, rounded Math and behaviour changes can
+-+  identify the extension or a settings combination.
+-+- **Page code can bypass it:** hostile page code can dispatch the config event and switch hooks
+-+  into pass-through mode on its own page (it cannot uninstall hooks, recover saved native
+-+  references, or touch storage/network rules). Damping defeats fingerprinters that don't know
+-+  about the extension, not adversarial page code.
+-+- **Workers are unprotected:** content scripts never run in worker/worklet globals, so
+-+  fingerprinting performed inside a Web Worker (e.g. `OffscreenCanvas`) is not damped.
+-+- **Not Tor Browser / not `resistFingerprinting`:** those give a far larger anonymity set at a far
+-+  higher usability cost.
+-+- Installed fonts, ICU/CLDR data, TLS/HTTP-stack behaviour and cached/saved references are out of
+-+  scope. The complete list: [docs/coverage.md](docs/coverage.md).
+- 
+- ## Layout
+- 
+- ```
+- manifest.json                 MV3, Firefox event page (not a service worker)
+- web-ext-config.cjs            package destination + excludes Node/browser test artifacts
+--rules/adnets.json             declarativeNetRequest blocklist
+-+rules/adnets.json             declarativeNetRequest blocklist (ships disabled)
+- rules/NOTICE.md               public source provenance and license notice
+- src/inject.js                 MAIN world, document_start — all API patches
+- src/bridge.js                 ISOLATED world — the only link to browser.*
+--src/background.js             settings, API allowlist, network-policy lifecycle, badge
+-+src/background.js             settings, API allowlist, session salt, network-policy lifecycle, badge
+- src/lockdown.js               pure global DNR/CSP policy definitions (extension pages only)
+- src/popup.html|js             per-page activity + pause toggle
+- src/options.html|js           feature switches and paused-site recovery
+--test/selftest.html|js         before/after verification page
+--test/font-probes.js           local-font diagnostics (not a protection)
+--test/probe-values.js          shared passive window/worker diagnostic values
+--test/worker-probe*            worker entries/driver (not production protection)
+--test/*.test.cjs               dependency-free regression tests
+--test/browser-regression.*     native-browser regression fixture
+--test/README.md                verification instructions and coverage limits
+--test/lockdown-server.cjs      repository-only HTTP fixture for native lockdown checks
+--docs/coverage.md             passive/Math coverage, workers and transport boundaries
+--docs/lockdown.md             global kill switches, enforcement limits and recovery
+--package.sh                    deterministic XPI packaging (repo root)
+-+test/*                        regression tests, fixtures and verification docs
+-+docs/coverage.md              per-surface coverage, boundaries and limitations
+-+docs/lockdown.md              global kill switches, enforcement limits and recovery
+-+docs/amo-review-notes.md      AMO reviewer notes
+-+package.sh                    reproducible XPI packaging (repo root)
+- scripts/amocheck.sh           AMO pattern gate + packaged-file allowlist
+- fingerprint-damper-*.xpi      built XPI (git-ignored)
+- LICENSE                       GNU GPL v3
+- ```
+- 
+--`inject.js` keeps every original descriptor in a `restore[]` array, so allowlisting genuinely hands
+--the site its native page API descriptors back. That is separate from global lockdown/CSP and
+--network rules, which are not removed by API allowlisting.
+--
+-----
+-+`inject.js` keeps its wrappers installed for the lifetime of the document. Pausing API patches
+-+sets a pass-through flag, so subsequent calls use the captured native behavior without restoring
+-+page descriptors. Resuming re-arms the existing wrappers. This is separate from global
+-+lockdown/CSP and network rules, which API pausing never disables.
+- 
+- ## License
+- 
+- **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). Full text in [LICENSE](LICENSE).
+--
+--This is a strong-copyleft license, chosen deliberately. Anyone may use, study, modify and
+--redistribute this — but if they distribute a modified version, or build something on top of it,
+--**they must release their source under the same license too.** A privacy tool whose derivatives can
+--be closed up is a privacy tool waiting to be quietly turned into its opposite; the whole point of
+--this extension is that you can read exactly what it does to your browser.
+--
+--Copyright (C) 2026 Fingerprint Damper contributors.
+-\ No newline at end of file
+-+Strong copyleft, chosen deliberately: anyone may use, study, modify and redistribute this — but
+-+derivatives must ship their source under the same license. A privacy tool whose derivatives can be
+-+closed up is a privacy tool waiting to be quietly turned into its opposite.
+-diff --git a/docs/amo-review-notes.md b/docs/amo-review-notes.md
+-new file mode 100644
+-index 0000000..e2c9e99
+---- /dev/null
+-+++ b/docs/amo-review-notes.md
+-@@ -0,0 +1,90 @@
+-+# AMO reviewer notes — Fingerprint Damper v1.2.0
+-+
+-+Short, factual notes for reviewers. Nothing here changes the shipped code; see the
+-+linked files for detail.
+-+
+-+## What the extension does, in one paragraph
+-+
+-+Fingerprint Damper installs page-level JavaScript wrappers that return crowd-blended,
+-+origin-stable values instead of the browser's identifying ones (GPU/model via WebGL, canvas
+-+hashes, battery level, CPU cores, optional audio/locale/timezone/etc.), and offers two
+-+additional tiers: user-opted-in network blocking via `declarativeNetRequest` (ships disabled)
+-+and a default-off "global lockdown" tier that applies browser-enforced CSP/header rules. It
+-+has no server, collects no data, and stores only local settings plus a per-browser-session
+-+salt used to derive stable damping seeds.
+-+
+-+## Why `<all_urls>` and MAIN-world injection are required
+-+
+-+The API wrappers must be installed at `document_start`, before ordinary page
+-+scripts read the affected JavaScript APIs. The optional lockdown tier operates
+-+separately through browser-managed declarativeNetRequest rules, which must be
+-+configured before the relevant requests and document responses occur.
+-+
+-+- The API patches (`src/inject.js`) must run in the page's own JavaScript realm
+-+  (`"world": "MAIN"`) to replace `Navigator`/`CanvasRenderingContext2D`/etc. behaviour that
+-+  page scripts read. There is no non-MAIN-world way to patch page-visible getters.
+-+- The lockdown tier (`src/lockdown.js`, background-only) configures
+-+  `declarativeNetRequest` rules evaluated by the browser on document responses and
+-+  subrequests; broad host access is required for header modification on any
+-+  HTTP(S) document the user visits.
+-+
+-+Host permissions are `<all_urls>` (required for MAIN-world injection on any page and for
+-+DNR header modification); Firefox automatically excludes restricted contexts. No browsing
+-+history is collected; per-origin state is limited to the user's own pause/allowlist entries
+-+in `storage.local`.
+-+
+-+## The `tabs` permission
+-+
+-+`tabs` is used to (a) resolve the active tab's origin for the per-site API pause toggle and
+-+(b) re-push configuration to already-open tabs after settings change. The extension does not
+-+read tab titles, URLs beyond the origin used for pause, favicons, or browsing history, and
+-+transmits nothing. Narrowing this permission is planned once it can be verified against a
+-+real Firefox; removing it without native testing risks breaking the documented pause flow.
+-+
+-+## Data handling / privacy
+-+
+-+- All settings storage is local (`storage.local` for persistent settings, `storage.session`
+-+  for the session salt — the background is the only context that touches the salt;
+-+  content/script pages never get `storage.session` access).
+-+- No analytics, telemetry, remote filter updates, or network calls originate from the
+-+  extension. The only network effect is the user-enabled DNR blocking rules.
+-+- `manifest.json` declares `"data_collection_permissions": {"required": ["none"]}`.
+-+- `scripts/amocheck.sh` enforces an allowlist of shipped files and rejects telemetry/
+-+  analytics/dynamic-code patterns; `package.sh` reproduces the XPI byte-for-byte (sorted
+-+  entry order, normalized timestamps). Reviewers can verify by building twice and comparing
+-+  SHA-256.
+-+
+-+## Known, documented limitations (see README "Main limitations")
+-+
+-+Conservative listing wording:
+-+
+-+> Reduces passive fingerprinting by ordinary scripts. Page-level JavaScript wrappers are
+-+> detectable and can be bypassed or switched to pass-through by adversarial page code.
+-+
+-+Additional honest caveats:
+-+
+-+- Wrappers are installed for the document lifetime; the per-site pause switches them to
+-+  pass-through rather than uninstalling them.
+-+- Settings propagation is asynchronous at `document_start`; until the bridge response lands,
+-+  shipped defaults apply. This is documented, not claimed otherwise.
+-+- Workers/worklets are not patched (content scripts cannot run there); the lockdown tier can
+-+  block new workers but does not normalize worker APIs.
+-+- The global lockdown tier is explicitly labelled experimental and is **off by default**; it
+-+  uses browser-enforced CSP/DNR rules (no spoofed responses) and documents its breakage.
+-+
+-+## Experimental features disclaimer
+-+
+-+"Block ad service workers", "Reduce Math precision", and the whole global lockdown tier are
+-+marked experimental in the UI and docs. None are enabled by default.
+-+
+-+## Reproducible packaging
+-+
+-+`package.sh` stages exactly the shipped file set, normalizes timestamps
+-+(`SOURCE_DATE_EPOCH` → last commit epoch → fixed epoch fallback), sorts entries and zips with
+-+`-X`, so two builds of the same tree produce identical bytes. No transpilation or minification:
+-+the packaged files are the source files.
+-+
+-+## Source availability
+-+
+-+GPL-3.0-or-later; repository `https://github.com/3spress0/fingerprint-damper`, source tree
+-+included in the source archive (same tree — no build step).
+-diff --git a/docs/coverage.md b/docs/coverage.md
+-index 2808d24..fcc2842 100644
+---- a/docs/coverage.md
+-+++ b/docs/coverage.md
+-@@ -147,3 +147,98 @@ outbound stack is a different trust boundary, potentially able to read traffic;
+- interception may require explicit certificate trust changes. Such a system needs
+- its own threat model, consent and deployment. This extension does not install a
+- proxy, trust a CA, weaken certificate validation, or expose a no-op TLS switch.
+-+
+-+## Stable persona: what "consistency" means in practice
+-+
+-+Values derive from a seed of `origin + date + session salt`, so a site sees one stable persona
+-+per browser session. Per-call randomness would break image editors/audio tools and is itself a
+-+loud, unique signal. Observed behaviour:
+-+
+-+```
+-+site A, reload 1       806dd20d
+-+site A, reload 2       806dd20d   <- stable, as intended
+-+site B, same session   b8589a2d   <- this damped value differs across origins
+-+site A, next session   18a9f38d   <- rotates, long-term linking through this surface reduced
+-+real canvas            ada5b8c5
+-+```
+-+
+-+## Protection behaviour in detail
+-+
+-+### On by default (low breakage risk)
+-+
+-+| Protection | Behaviour |
+-+|---|---|
+-+| Canvas / text metric noise | Up to 32 RGB low-bit flips on pixel readback/serialization (max channel delta 1/255), including main-thread `OffscreenCanvas`. The noise step is O(32); serialization needs a copy and skips canvases over 4 MP. `measureText()` fields get stable <0.01px jitter. This changes exact hashes, not reliable font-availability tests. |
+-+| WebGL identity / readback | Vendor, renderer and matching version strings → `Mozilla` / `WebGL 1.0` or `2.0`; `WEBGL_debug_renderer_info` is hidden. Standard RGBA/UNSIGNED_BYTE `readPixels()` receives stable, low-bit RGB noise. Other WebGL capabilities, shader behavior, non-byte formats and PBO readback remain native. |
+-+| Hardware capacity | `hardwareConcurrency` → 8 and, only if the browser already exposes it, `deviceMemory` → 8. No API is invented; worker navigators remain native. |
+-+| Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell when its getters are patchable; native failures remain failures. Level plus discharge time is a startlingly good short-term cross-site correlator. |
+-+
+-+### Opt-in (off by default since v1.2.0)
+-+
+-+| Protection | Behaviour and trade-off |
+-+|---|---|
+-+| Count activity for the popup | Toolbar badge counts intercepted reads. Off by default for a quieter profile: it needs a page-visible event channel, which slightly increases detectability. |
+-+| Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. That array is the buffer's real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing. Off by default for that reason. |
+-+| Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. |
+-+| Block notification permission prompts | `Notification.requestPermission()` resolves `"default"` with **no dialog** — but only for requests that do not follow transient user activation; requests made right after a deliberate click still prompt normally. `"default"` reads as *the user dismissed it*, which is commonplace and unremarkable. |
+-+| Block ad service workers (experimental) | Rejects service-worker registrations whose host labels or script path match known ad-SDK patterns. Boundary-aware matching (host labels / path tokens), never raw substring tests. Pattern matching can hit unrelated apps — use the per-site pause as a bypass. |
+-+| Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). Source-derived domains apply only to third-party requests; provenance in [rules/NOTICE.md](../rules/NOTICE.md). Ships disabled; excludes `etacloud.org` and `tubeapi.org` (the actual conversion backend in the y2mate teardown). |
+-+| Hide speech voice list | `getVoices()` returns an empty array. Native default speech remains available, but voice pickers and some accessibility flows may break. No fake voices are created. |
+-+| Hide media device list | Successful `enumerateDevices()` calls return an empty array, hiding enumerated labels, counts and IDs. Native errors and capture APIs remain unchanged. Camera/microphone/speaker pickers may break; this does **not** block capture. |
+-+| Mask passive permission states | Native `PermissionStatus.state` reads report `prompt`; `Notification.permission` reports `default`. Real grants, explicit request results, query support/errors and events stay native. Sites may show redundant permission UI or disable features. |
+-+| Reduce Math precision (experimental) | Rounds 12 low fraction bits of eligible transcendental/root/power results (added relative error roughly at most 4.55e-13). Special values, integers and subnormals stay native. Can break exact identities or numerical code; not a faithful or complete cross-engine Math replacement. Native Math functions are left untouched until opted in. |
+-+| ClientRects damping | Stable sub-pixel changes to `Element` and `Range` `getBoundingClientRect()` / `getClientRects()`. Native `DOMRect`/`DOMRectList` objects, zero dimensions, and bounding/fragment relationships are preserved (within floating-point precision). No DOM layout is changed, but callers using these measurements for positioning, selection or hit-testing may break. |
+-+| Default to `en-US` language / locale | Sets navigator language and normalises default locale selection in available `Intl` formatters, numeric/date `toLocale*` methods, string collation and locale-sensitive casing. Supported explicit locale choices and Unicode extensions remain native; empty/unsupported requests fall back to `en-US`. Sites may stop showing your language. |
+-+| Default to UTC timezone | Uses UTC for default `Intl.DateTimeFormat` and date `toLocale*` formatting, plus zero timezone offsets. Output and `resolvedOptions()` agree. Explicit time zones remain native. Can break calendars, bookings and delivery estimates; other local-time `Date` APIs are not masked. |
+-+| WebRTC address filtering | Withholds host, server-reflexive and peer-reflexive ICE candidates from events, SDP creation/local-description reads and local candidate stats; relay (TURN) paths stay available. While enabled, `getStats()` resolves to a map-shaped sanitized copy. May break peer-to-peer applications without TURN and changes diagnostics. |
+-+
+-+Locale/timezone settings affect **new formatters** and subsequent `toLocale*` calls.
+-+Already-created formatter objects and already-returned measurement snapshots keep their values;
+-+reload after a settings change to clear a site's cached objects. These controls reduce particular
+-+observations, not all ways of inferring a machine's fonts, locale, or time zone. Previously
+-+returned voice/device lists remain readable too. TLS/HTTP-stack normalization remains out of
+-+scope; selected HTTP headers can be removed with the separate [lockdown tier](lockdown.md).
+-+
+-+## Detailed limitations
+-+
+-+- **Installed-font availability is not hidden.** `FontFace`/CSS `local()` loading and ordinary
+-+  font selection remain native. `document.fonts` iterates document-managed faces, not the whole
+-+  installed-font list; `check()` can return `true` for nonexistent families, so it is not itself
+-+  an installed-font oracle. [MDN: FontFaceSet.check](https://developer.mozilla.org/en-US/docs/Web/API/FontFaceSet/check)
+-+  Tiny text-metric/ClientRects jitter changes exact hashes, but rounding, tolerance-based probes,
+-+  and other layout measurements can still identify fonts.
+-+- **Intl engine data is not standardised.** The locale option changes default locale selection,
+-+  not ICU/CLDR versions, `Intl.Locale`, static capability queries or results for supported
+-+  explicit locales. Native local-time `Date` methods such as `toString()` and `getHours()` can
+-+  still reveal the time zone even when the UTC option is on.
+-+- **Worker and worklet globals are unprotected.** Content scripts run in window realms, not
+-+  dedicated/shared/service workers or worklets. Any relevant API exposed in those globals — for
+-+  example OffscreenCanvas/WebGL, worker font APIs, Intl or worker navigator fields — bypasses the
+-+  window patches. The opt-in CSP worker/script lockdown blocks can deny new workers on covered
+-+  documents; they do not normalize worker APIs or stop existing workers. Broader coverage needs a
+-+  different architecture or browser-level protections, not another window-prototype patch.
+-+- **Passive masking is not capability control.** Voice/device lists can be hidden, but cached
+-+  objects, native change-event timing, real capture/track APIs and explicit permission outcomes
+-+  remain available. Permission support/errors remain observable. The notification guard controls
+-+  notification requests independently from passive permission-state masking.
+-+- **Battery masking is value masking, not battery isolation.** Where the browser exposes patchable
+-+  `BatteryManager` getters, the native manager identity/events remain so compatibility is
+-+  preserved; event timing and saved native getters can still reveal changes. Native rejections
+-+  stay rejections. With the battery switch off, `getBattery()` returns its native result.
+-+- **WebGL and capacity masking are partial.** The standard byte-array `readPixels()` path is
+-+  damped, but shader precision, limits, extensions other than debug-renderer info, non-byte/PBO
+-+  readback and worker/OffscreenCanvas WebGL remain native. `deviceMemory` is masked only when it
+-+  already exists; no worker navigator is altered.
+-+- **WebRTC filtering is page-world compatibility masking, not transport isolation.** It cannot
+-+  retract an address exposed before injection or through a saved native reference, block browser
+-+  transport itself, or make latency/network characteristics anonymous. Remote candidates and the
+-+  broader WebRTC API remain native.
+-+- **Math rounding is experimental, not engine standardisation.** Exact identities and numerical
+-+  algorithms can change. Arithmetic operators, WebAssembly, unpatched globals and
+-+  rounding-boundary differences remain available to probes.
+-+- **Cache lockdown is not storage cleanup or a service-worker bypass.** It removes validators and
+-+  sets `Cache-Control: no-store` only on eligible responses after the rule is active. Existing
+-+  HTTP cache entries, BFCache, service-worker caches and URL identifiers remain outside its
+-+  control.
+-+- **TLS/HTTP-stack fingerprinting remains outside scope.** Optional removal of selected HTTP
+-+  headers is not transport normalization; see [the transport boundary](#tls--http-no-implementation-in-this-layer).
+-diff --git a/docs/lockdown.md b/docs/lockdown.md
+-index cbac566..4617688 100644
+---- a/docs/lockdown.md
+-+++ b/docs/lockdown.md
+-@@ -94,8 +94,12 @@ policy it received and need reloading. “Rules configured” confirms configura
+- - Files, extension/internal pages, data/blob documents and inherited-policy edge
+-   cases are not blanket-covered by the HTTP response rule. No OS sandbox, proxy,
+-   VPN, certificate installation or wholesale browser privacy policy is supplied.
+--- Native Firefox verification is still required. The Node tests model rule generation,
+--  configuration failure/rollback and UI behavior—not actual CSP or network enforcement.
+-+- Native Firefox enforcement of these rules was verified on 2026-09-10 in
+-+  Firefox 155.0.1 (headless, Marionette-driven): all nine controls blocked or
+-+  rewrote the targeted behavior, and every control recovered cleanly after
+-+  turn-off. The Node tests still cover rule generation, configuration
+-+  failure/rollback and UI behavior. A manual pass in a GUI profile remains
+-+  recommended before wide release.
+- 
+- ## Verification / references
+- 
+-diff --git a/src/background.js b/src/background.js
+-index 68965a8..3a395e9 100644
+---- a/src/background.js
+-+++ b/src/background.js
+-@@ -43,7 +43,7 @@ const DEFAULTS = {
+-   mediaDevices: false,
+-   permissionStates: false,
+-   mathRounding: false,
+--  stats: true,
+-+  stats: false,
+-   ...FPDLockdown.defaults
+- };
+- 
+-diff --git a/src/inject.js b/src/inject.js
+-index af4504a..bd9f562 100644
+---- a/src/inject.js
+-+++ b/src/inject.js
+-@@ -60,7 +60,7 @@
+-     mediaDevices: false, // opt-in: camera/microphone/speaker pickers may break
+-     permissionStates: false, // opt-in: sites may show redundant permission UI
+-     mathRounding: false, // experimental: reduces numerical precision
+--    stats: true
+-+    stats: false // opt-in: page-visible event channel, slightly easier to detect
+-   };
+- 
+-   let salt = '';
+-diff --git a/src/options.js b/src/options.js
+-index 28d7afe..0d7cca9 100644
+---- a/src/options.js
+-+++ b/src/options.js
+-@@ -21,13 +21,13 @@ const SAFE = [
+-   ['concurrency', 'Normalise hardware capacity',
+-    'Reports 8 CPU cores and, only where the browser already exposes it, 8 GB deviceMemory. It does not add APIs or patch worker navigators.'],
+-   ['battery', 'Neutralise Battery API',
+--   'Reports full and charging while retaining the native BatteryManager shell where available. Battery level is a strong short-term cross-site correlator.'],
+--  ['stats', 'Count activity for the popup',
+--   'Slightly increases detectability, since it needs a page-visible event channel. Turn off for a quieter profile.']
+-+   'Reports full and charging while retaining the native BatteryManager shell where available. Battery level is a strong short-term cross-site correlator.']
+- ];
+- 
+- // Off by default: touches application data, prompts, workers or the network.
+- const RISKY = [
+-+  ['stats', 'Count activity for the popup',
+-+   'Off by default for a quieter profile: it needs a page-visible event channel, which slightly increases detectability. Enable it for toolbar activity counts.'],
+-   ['audio', 'Audio noise',
+-    'Perturbs ~32 samples by 1e-7 in AudioBuffer.getChannelData() results. That array is the buffer\'s real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing.'],
+-   ['geometry', 'Normalise window geometry',
+-diff --git a/test/inject.test.cjs b/test/inject.test.cjs
+-index c50328c..012068c 100644
+---- a/test/inject.test.cjs
+-+++ b/test/inject.test.cjs
+-@@ -331,6 +331,7 @@ test('OffscreenCanvas pixel reads use stable noise without changing the live can
+- 
+- test('convertToBlob noises a copy exactly once and forwards encoding options', async () => {
+-   const env = setup();
+-+  env.configure({ settings: { stats: true } });
+-   const canvas = new env.OffscreenCanvas();
+-   const original = canvas.pixels.slice();
+-   const options = { type: 'image/webp', quality: 0.8 };
+-diff --git a/test/passive-math.test.cjs b/test/passive-math.test.cjs
+-index a4a6132..4aa1dfb 100644
+---- a/test/passive-math.test.cjs
+-+++ b/test/passive-math.test.cjs
+-@@ -292,6 +292,7 @@ test('hardware capacity masking keeps exposed CPU and memory values coherent wit
+- 
+- test('Battery masking keeps the native manager shell and restores exact native behavior when off', async () => {
+-   const env = setup();
+-+  env.configure({ settings: { stats: true } });
+-   assert.equal(await env.evaluate(`(async () => {
+-     const first = await navigator.getBattery();
+-     const second = await navigator.getBattery();
+-@@ -337,7 +338,7 @@ test('Battery masking uses one stable safe fallback for an unusual partial API',
+- 
+- test('WebRTC address filtering covers events, SDP creation and local-description reads while preserving listener removal', async () => {
+-   const env = setup();
+--  env.configure({ settings: { webrtc: true } });
+-+  env.configure({ settings: { webrtc: true, stats: true } });
+-   assert.equal(await env.evaluate(`(async () => {
+-     const pc = new RTCPeerConnection();
+-     const calls = [];
+-@@ -624,7 +625,7 @@ test('optional passive APIs can be absent without preventing Math or other patch
+- 
+- test('new activity counts contain counts only and respect the stats setting', async () => {
+-   const env = setup();
+--  env.configure({ settings: { speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true } });
+-+  env.configure({ settings: { stats: true, speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true } });
+-   await env.evaluate(`(async () => {
+-     speechSynthesis.getVoices(); await navigator.mediaDevices.enumerateDevices();
+-     void navigator.permissions.statuses.geolocation.state; void Notification.permission; Math.sin(1);
+-@@ -635,6 +636,21 @@ test('new activity counts contain counts only and respect the stats setting', as
+-   assert.deepEqual(env.stats(), { speechVoices: 1, mediaDevices: 1, permissionStates: 2, mathRounding: 1 });
+- });
+- 
+-+test('activity counting is off by default and stays off while damping fires', async () => {
+-+  const env = setup();
+-+  // Default profile since v1.2.0: damping active, no stats channel.
+-+  env.configure({ settings: { speechVoices: true, permissionStates: true } });
+-+  await env.evaluate(`(async () => {
+-+    speechSynthesis.getVoices();
+-+    void navigator.permissions.statuses.geolocation.state;
+-+    void Notification.permission;
+-+  })()`);
+-+  assert.deepEqual(env.stats(), {}, 'no page-visible stats events without opting in');
+-+  env.configure({ settings: { stats: true } });
+-+  env.evaluate('speechSynthesis.getVoices();');
+-+  assert.deepEqual(env.stats(), { speechVoices: 1 }, 'opt-in re-enables counting');
+-+});
+-+
+- test('pausing passes every surface through while hooks stay installed; resuming re-arms in place', async () => {
+-   const env = setup();
+-   env.configure({ settings: { speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true, webrtc: true, notify: true } });
