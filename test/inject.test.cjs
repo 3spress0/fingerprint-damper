@@ -331,6 +331,7 @@ test('OffscreenCanvas pixel reads use stable noise without changing the live can
 
 test('convertToBlob noises a copy exactly once and forwards encoding options', async () => {
   const env = setup();
+  env.configure({ settings: { stats: true } });
   const canvas = new env.OffscreenCanvas();
   const original = canvas.pixels.slice();
   const options = { type: 'image/webp', quality: 0.8 };

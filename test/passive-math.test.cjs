@@ -292,6 +292,7 @@ test('hardware capacity masking keeps exposed CPU and memory values coherent wit
 
 test('Battery masking keeps the native manager shell and restores exact native behavior when off', async () => {
   const env = setup();
+  env.configure({ settings: { stats: true } });
   assert.equal(await env.evaluate(`(async () => {
     const first = await navigator.getBattery();
     const second = await navigator.getBattery();
@@ -337,7 +338,7 @@ test('Battery masking uses one stable safe fallback for an unusual partial API',
 
 test('WebRTC address filtering covers events, SDP creation and local-description reads while preserving listener removal', async () => {
   const env = setup();
-  env.configure({ settings: { webrtc: true } });
+  env.configure({ settings: { webrtc: true, stats: true } });
   assert.equal(await env.evaluate(`(async () => {
     const pc = new RTCPeerConnection();
     const calls = [];
@@ -624,7 +625,7 @@ test('optional passive APIs can be absent without preventing Math or other patch
 
 test('new activity counts contain counts only and respect the stats setting', async () => {
   const env = setup();
-  env.configure({ settings: { speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true } });
+  env.configure({ settings: { stats: true, speechVoices: true, mediaDevices: true, permissionStates: true, mathRounding: true } });
   await env.evaluate(`(async () => {
     speechSynthesis.getVoices(); await navigator.mediaDevices.enumerateDevices();
     void navigator.permissions.statuses.geolocation.state; void Notification.permission; Math.sin(1);
@@ -633,6 +634,21 @@ test('new activity counts contain counts only and respect the stats setting', as
   env.configure({ settings: { stats: false } });
   env.evaluate('speechSynthesis.getVoices(); Math.sin(1);');
   assert.deepEqual(env.stats(), { speechVoices: 1, mediaDevices: 1, permissionStates: 2, mathRounding: 1 });
+});
+
+test('activity counting is off by default and stays off while damping fires', async () => {
+  const env = setup();
+  // Default profile since v1.2.0: damping active, no stats channel.
+  env.configure({ settings: { speechVoices: true, permissionStates: true } });
+  await env.evaluate(`(async () => {
+    speechSynthesis.getVoices();
+    void navigator.permissions.statuses.geolocation.state;
+    void Notification.permission;
+  })()`);
+  assert.deepEqual(env.stats(), {}, 'no page-visible stats events without opting in');
+  env.configure({ settings: { stats: true } });
+  env.evaluate('speechSynthesis.getVoices();');
+  assert.deepEqual(env.stats(), { speechVoices: 1 }, 'opt-in re-enables counting');
 });
 
 test('pausing passes every surface through while hooks stay installed; resuming re-arms in place', async () => {

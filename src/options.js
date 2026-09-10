@@ -21,13 +21,13 @@ const SAFE = [
   ['concurrency', 'Normalise hardware capacity',
    'Reports 8 CPU cores and, only where the browser already exposes it, 8 GB deviceMemory. It does not add APIs or patch worker navigators.'],
   ['battery', 'Neutralise Battery API',
-   'Reports full and charging while retaining the native BatteryManager shell where available. Battery level is a strong short-term cross-site correlator.'],
-  ['stats', 'Count activity for the popup',
-   'Slightly increases detectability, since it needs a page-visible event channel. Turn off for a quieter profile.']
+   'Reports full and charging while retaining the native BatteryManager shell where available. Battery level is a strong short-term cross-site correlator.']
 ];
 
 // Off by default: touches application data, prompts, workers or the network.
 const RISKY = [
+  ['stats', 'Count activity for the popup',
+   'Off by default for a quieter profile: it needs a page-visible event channel, which slightly increases detectability. Enable it for toolbar activity counts.'],
   ['audio', 'Audio noise',
    'Perturbs ~32 samples by 1e-7 in AudioBuffer.getChannelData() results. That array is the buffer\'s real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing.'],
   ['geometry', 'Normalise window geometry',

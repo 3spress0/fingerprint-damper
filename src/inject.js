@@ -60,7 +60,7 @@
     mediaDevices: false, // opt-in: camera/microphone/speaker pickers may break
     permissionStates: false, // opt-in: sites may show redundant permission UI
     mathRounding: false, // experimental: reduces numerical precision
-    stats: true
+    stats: false // opt-in: page-visible event channel, slightly easier to detect
   };
 
   let salt = '';

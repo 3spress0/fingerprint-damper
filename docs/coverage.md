@@ -147,3 +147,98 @@ outbound stack is a different trust boundary, potentially able to read traffic;
 interception may require explicit certificate trust changes. Such a system needs
 its own threat model, consent and deployment. This extension does not install a
 proxy, trust a CA, weaken certificate validation, or expose a no-op TLS switch.
+
+## Stable persona: what "consistency" means in practice
+
+Values derive from a seed of `origin + date + session salt`, so a site sees one stable persona
+per browser session. Per-call randomness would break image editors/audio tools and is itself a
+loud, unique signal. Observed behaviour:
+
+```
+site A, reload 1       806dd20d
+site A, reload 2       806dd20d   <- stable, as intended
+site B, same session   b8589a2d   <- cross-site linking broken
+site A, next session   18a9f38d   <- rotates, long-term linking broken
+real canvas            ada5b8c5
+```
+
+## Protection behaviour in detail
+
+### On by default (low breakage risk)
+
+| Protection | Behaviour |
+|---|---|
+| Canvas / text metric noise | Up to 32 RGB low-bit flips on pixel readback/serialization (max channel delta 1/255), including main-thread `OffscreenCanvas`. The noise step is O(32); serialization needs a copy and skips canvases over 4 MP. `measureText()` fields get stable <0.01px jitter. This changes exact hashes, not reliable font-availability tests. |
+| WebGL identity / readback | Vendor, renderer and matching version strings → `Mozilla` / `WebGL 1.0` or `2.0`; `WEBGL_debug_renderer_info` is hidden. Standard RGBA/UNSIGNED_BYTE `readPixels()` receives stable, low-bit RGB noise. Other WebGL capabilities, shader behavior, non-byte formats and PBO readback remain native. |
+| Hardware capacity | `hardwareConcurrency` → 8 and, only if the browser already exposes it, `deviceMemory` → 8. No API is invented; worker navigators remain native. |
+| Battery | `getBattery()` reports full and charging while keeping the native `BatteryManager` shell when its getters are patchable; native failures remain failures. Level plus discharge time is a startlingly good short-term cross-site correlator. |
+
+### Opt-in (off by default since v1.2.0)
+
+| Protection | Behaviour and trade-off |
+|---|---|
+| Count activity for the popup | Toolbar badge counts intercepted reads. Off by default for a quieter profile: it needs a page-visible event channel, which slightly increases detectability. |
+| Audio noise | ~32 samples perturbed by 1e-7 in `AudioBuffer.getChannelData` and `AnalyserNode`. That array is the buffer's real backing store, so audio apps that read or export those samples see tiny drift. Inaudible; defeats AudioContext hashing. Off by default for that reason. |
+| Window geometry | `screenX`/`screenY` → 0, `outerWidth/Height` → inner, `availWidth/Height` → full, colour depth → 24. Leaks OS, theme, toolbar count and monitor layout; needed by nothing. |
+| Block notification permission prompts | `Notification.requestPermission()` resolves `"default"` with **no dialog** — but only for requests that do not follow transient user activation; requests made right after a deliberate click still prompt normally. `"default"` reads as *the user dismissed it*, which is commonplace and unremarkable. |
+| Block ad service workers (experimental) | Rejects service-worker registrations whose host labels or script path match known ad-SDK patterns. Boundary-aware matching (host labels / path tokens), never raw substring tests. Pattern matching can hit unrelated apps — use the per-site pause as a bypass. |
+| Network block | Static DNR blocks 78 known ad/push-network request domains: 10 original teardown hosts plus 68 unique entries from nine public [LanikSJ/ubo-filters](https://github.com/LanikSJ/ubo-filters) lists (MIT; four overlap). Source-derived domains apply only to third-party requests; provenance in [rules/NOTICE.md](../rules/NOTICE.md). Ships disabled; excludes `etacloud.org` and `tubeapi.org` (the actual conversion backend in the y2mate teardown). |
+| Hide speech voice list | `getVoices()` returns an empty array. Native default speech remains available, but voice pickers and some accessibility flows may break. No fake voices are created. |
+| Hide media device list | Successful `enumerateDevices()` calls return an empty array, hiding enumerated labels, counts and IDs. Native errors and capture APIs remain unchanged. Camera/microphone/speaker pickers may break; this does **not** block capture. |
+| Mask passive permission states | Native `PermissionStatus.state` reads report `prompt`; `Notification.permission` reports `default`. Real grants, explicit request results, query support/errors and events stay native. Sites may show redundant permission UI or disable features. |
+| Reduce Math precision (experimental) | Rounds 12 low fraction bits of eligible transcendental/root/power results (added relative error roughly at most 4.55e-13). Special values, integers and subnormals stay native. Can break exact identities or numerical code; not a faithful or complete cross-engine Math replacement. Native Math functions are left untouched until opted in. |
+| ClientRects damping | Stable sub-pixel changes to `Element` and `Range` `getBoundingClientRect()` / `getClientRects()`. Native `DOMRect`/`DOMRectList` objects, zero dimensions, and bounding/fragment relationships are preserved (within floating-point precision). No DOM layout is changed, but callers using these measurements for positioning, selection or hit-testing may break. |
+| Default to `en-US` language / locale | Sets navigator language and normalises default locale selection in available `Intl` formatters, numeric/date `toLocale*` methods, string collation and locale-sensitive casing. Supported explicit locale choices and Unicode extensions remain native; empty/unsupported requests fall back to `en-US`. Sites may stop showing your language. |
+| Default to UTC timezone | Uses UTC for default `Intl.DateTimeFormat` and date `toLocale*` formatting, plus zero timezone offsets. Output and `resolvedOptions()` agree. Explicit time zones remain native. Can break calendars, bookings and delivery estimates; other local-time `Date` APIs are not masked. |
+| WebRTC address filtering | Withholds host, server-reflexive and peer-reflexive ICE candidates from events, SDP creation/local-description reads and local candidate stats; relay (TURN) paths stay available. While enabled, `getStats()` resolves to a map-shaped sanitized copy. May break peer-to-peer applications without TURN and changes diagnostics. |
+
+Locale/timezone settings affect **new formatters** and subsequent `toLocale*` calls.
+Already-created formatter objects and already-returned measurement snapshots keep their values;
+reload after a settings change to clear a site's cached objects. These controls reduce particular
+observations, not all ways of inferring a machine's fonts, locale, or time zone. Previously
+returned voice/device lists remain readable too. TLS/HTTP-stack normalization remains out of
+scope; selected HTTP headers can be removed with the separate [lockdown tier](lockdown.md).
+
+## Detailed limitations
+
+- **Installed-font availability is not hidden.** `FontFace`/CSS `local()` loading and ordinary
+  font selection remain native. `document.fonts` iterates document-managed faces, not the whole
+  installed-font list; `check()` can return `true` for nonexistent families, so it is not itself
+  an installed-font oracle. [MDN: FontFaceSet.check](https://developer.mozilla.org/en-US/docs/Web/API/FontFaceSet/check)
+  Tiny text-metric/ClientRects jitter changes exact hashes, but rounding, tolerance-based probes,
+  and other layout measurements can still identify fonts.
+- **Intl engine data is not standardised.** The locale option changes default locale selection,
+  not ICU/CLDR versions, `Intl.Locale`, static capability queries or results for supported
+  explicit locales. Native local-time `Date` methods such as `toString()` and `getHours()` can
+  still reveal the time zone even when the UTC option is on.
+- **Worker and worklet globals are unprotected.** Content scripts run in window realms, not
+  dedicated/shared/service workers or worklets. Any relevant API exposed in those globals — for
+  example OffscreenCanvas/WebGL, worker font APIs, Intl or worker navigator fields — bypasses the
+  window patches. The opt-in CSP worker/script lockdown blocks can deny new workers on covered
+  documents; they do not normalize worker APIs or stop existing workers. Broader coverage needs a
+  different architecture or browser-level protections, not another window-prototype patch.
+- **Passive masking is not capability control.** Voice/device lists can be hidden, but cached
+  objects, native change-event timing, real capture/track APIs and explicit permission outcomes
+  remain available. Permission support/errors remain observable. The notification guard controls
+  notification requests independently from passive permission-state masking.
+- **Battery masking is value masking, not battery isolation.** Where the browser exposes patchable
+  `BatteryManager` getters, the native manager identity/events remain so compatibility is
+  preserved; event timing and saved native getters can still reveal changes. Native rejections
+  stay rejections. With the battery switch off, `getBattery()` returns its native result.
+- **WebGL and capacity masking are partial.** The standard byte-array `readPixels()` path is
+  damped, but shader precision, limits, extensions other than debug-renderer info, non-byte/PBO
+  readback and worker/OffscreenCanvas WebGL remain native. `deviceMemory` is masked only when it
+  already exists; no worker navigator is altered.
+- **WebRTC filtering is page-world compatibility masking, not transport isolation.** It cannot
+  retract an address exposed before injection or through a saved native reference, block browser
+  transport itself, or make latency/network characteristics anonymous. Remote candidates and the
+  broader WebRTC API remain native.
+- **Math rounding is experimental, not engine standardisation.** Exact identities and numerical
+  algorithms can change. Arithmetic operators, WebAssembly, unpatched globals and
+  rounding-boundary differences remain available to probes.
+- **Cache lockdown is not storage cleanup or a service-worker bypass.** It removes validators and
+  sets `Cache-Control: no-store` only on eligible responses after the rule is active. Existing
+  HTTP cache entries, BFCache, service-worker caches and URL identifiers remain outside its
+  control.
+- **TLS/HTTP-stack fingerprinting remains outside scope.** Optional removal of selected HTTP
+  headers is not transport normalization; see [the transport boundary](#tls--http-no-implementation-in-this-layer).

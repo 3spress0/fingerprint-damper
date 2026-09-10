@@ -43,7 +43,7 @@ const DEFAULTS = {
   mediaDevices: false,
   permissionStates: false,
   mathRounding: false,
-  stats: true,
+  stats: false,
   ...FPDLockdown.defaults
 };
 
