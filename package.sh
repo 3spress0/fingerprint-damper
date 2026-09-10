@@ -119,8 +119,8 @@ if [ "$MODE" = "--verify" ]; then
   stage
   # Tests (do not abort the report on failure; surface the counts instead).
   TEST_OUT="$(node --test test/*.test.cjs 2>/dev/null || true)"
-  TESTS_PASS="$(printf '%s\n' "$TEST_OUT" | sed -n 's/^# pass //p' | head -n1)"
-  TESTS_FAIL="$(printf '%s\n' "$TEST_OUT" | sed -n 's/^# fail //p' | head -n1)"
+  TESTS_PASS="$(printf '%s\n' "$TEST_OUT" | sed -n 's/^[[:space:]]*ℹ[[:space:]]*pass[[:space:]]*//p' | head -n1)"
+  TESTS_FAIL="$(printf '%s\n' "$TEST_OUT" | sed -n 's/^[[:space:]]*ℹ[[:space:]]*fail[[:space:]]*//p' | head -n1)"
   build >/dev/null
   if command -v unzip >/dev/null 2>&1; then
     ACTUAL_COUNT="$(unzip -Z1 "$OUTPUT" | wc -l | tr -d ' ')"
