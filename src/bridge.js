@@ -19,11 +19,23 @@
  * detail is passed as a JSON *string* on purpose: strings clone cleanly across
  * Firefox's Xray boundary, whereas plain objects need cloneInto() and fail
  * silently if you forget.
+ *
+ * Bootstrap order (v1.2.0): the background keeps a config snapshot in
+ * storage.session ({ salt, settings, allowlist }) and opens session storage
+ * to content scripts. At document_start this script reads that snapshot
+ * directly - no background wake, so the MAIN-world hooks reconcile with the
+ * user's real settings within a few milliseconds of injection, before page
+ * scripts run. If the snapshot is empty (first tab of a browser session
+ * before the background has started), fall back to one runtime.sendMessage,
+ * which creates it.
  */
 (() => {
   'use strict';
 
   const api = typeof browser !== 'undefined' ? browser : chrome;
+
+  // Must match background.js SESSION_KEY.
+  const SESSION_KEY = 'fpdSession';
 
   function send(msg) {
     try {
@@ -33,14 +45,37 @@
     } catch (_) {}
   }
 
+  async function snapshotConfig() {
+    let origin = '';
+    try { origin = location.origin || location.href; } catch (_) {}
+    let snap = null;
+    try {
+      const got = await api.storage.session.get(SESSION_KEY);
+      snap = (got && got[SESSION_KEY]) || null;
+    } catch (_) { snap = null; }
+    if (!snap || typeof snap !== 'object' || typeof snap.salt !== 'string' ||
+        !snap.settings || typeof snap.settings !== 'object') return null;
+    return {
+      salt: snap.salt,
+      settings: snap.settings,
+      allowlisted: origin && Array.isArray(snap.allowlist)
+        ? snap.allowlist.includes(origin) : false
+    };
+  }
+
   let delivered = false;
 
   async function deliver() {
-    let res;
-    try {
-      res = await api.runtime.sendMessage({ type: 'getConfig', href: location.href });
-    } catch (_) {
-      return;   // background not ready; protective defaults stay in force
+    let res = null;
+    try { res = await snapshotConfig(); } catch (_) { res = null; }
+    if (!res) {
+      // Cold-start fallback: no snapshot yet (background not started in this
+      // browser session). Waking the background also creates the snapshot.
+      try {
+        res = await api.runtime.sendMessage({ type: 'getConfig', href: location.href });
+      } catch (_) {
+        return;   // background not ready; shipped defaults stay in force
+      }
     }
     if (!res) return;
     delivered = true;
@@ -75,8 +110,9 @@
     }, 700);
   });
 
-  // Live-apply page API settings. New CSP/sandbox policies require a fresh
-  // document response; this broadcast does not retrofit them onto loaded pages.
+  // Live-apply page API settings and pause/resume changes. The background
+  // refreshes the session snapshot before sending this, so re-reading it here
+  // always yields the new state without another background round trip.
   api.runtime.onMessage.addListener((msg) => {
     if (!msg || msg.type !== 'configChanged') return;
     delivered = false;
