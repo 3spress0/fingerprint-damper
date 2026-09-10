@@ -1,4 +1,4 @@
-/* Fingerprint Damper — manual HTTP lockdown fixture, not an enforcement layer.
+/* Fingerprint Damper - manual HTTP lockdown fixture, not an enforcement layer.
  * Copyright (C) 2026 espress0
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -57,7 +57,7 @@ const probeCode = `(() => {
   run('blob', () => new Worker(blob), () => URL.revokeObjectURL(blob));
 })();`;
 const page = `<!doctype html><html lang="en"><meta charset="utf-8">
-<title>Fingerprint Damper — HTTP lockdown check</title>
+<title>Fingerprint Damper - HTTP lockdown check</title>
 <style>body{font:15px/1.5 system-ui;max-width:850px;margin:32px auto;padding:0 20px}li{margin:7px 0}code{overflow-wrap:anywhere}</style>
 <link rel="stylesheet" href="/style.css">
 <h1>HTTP lockdown check</h1>

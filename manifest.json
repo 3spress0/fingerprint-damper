@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fingerprint Damper",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Dampens browser fingerprinting APIs, with optional controls for push-notification ad SDKs and network lockdown.",
 
   "browser_specific_settings": {

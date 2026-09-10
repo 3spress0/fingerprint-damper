@@ -1,4 +1,4 @@
-/* Fingerprint Damper — API-level anti-fingerprinting for Firefox.
+/* Fingerprint Damper - API-level fingerprint damping for Firefox.
  * Copyright (C) 2026 espress0
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -160,7 +160,7 @@ async function save(patch) {
     saved = true;
     await load();
     if (result.warning) document.getElementById('save-error').textContent = result.warning;
-    showSaved('Saved — new pages and live hooks are updated; reload if a page cached results');
+    showSaved('Saved - new pages and live hooks are updated; reload if a page cached results');
   } catch (error) {
     try { await load(); } catch (_) { /* Retain the explicit failure below. */ }
     document.getElementById('save-error').textContent = (saved ? 'Saved, but UI refresh failed: ' : 'Not saved: ') + error.message;

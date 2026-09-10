@@ -13,14 +13,15 @@
   .sub { opacity: .65; font-size: 12px; margin-bottom: 20px; }
   h2 {
     font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
-    opacity: .55; margin: 22px 0 8px; font-weight: 600;
+    color: light-dark(#2b5fd9, #8fb0ff); opacity: .9; margin: 22px 0 8px; font-weight: 600;
   }
   label {
     display: flex; gap: 10px; align-items: flex-start;
     padding: 8px 10px; border-radius: 7px; cursor: pointer;
   }
   label:hover { background: color-mix(in srgb, CanvasText 6%, transparent); }
-  input[type=checkbox] { margin-top: 2px; flex: none; }
+  input[type=checkbox] { margin-top: 2px; flex: none; accent-color: light-dark(#2b5fd9, #7aa2ff); }
+  button:focus-visible, input:focus-visible { outline: 2px solid #2b5fd9; outline-offset: 1px; }
   .t { font-weight: 500; }
   .d { font-size: 11.5px; opacity: .62; }
   .warn {
@@ -54,10 +55,10 @@
   <div class="sub">API-patch changes apply live to open pages; reload if a page cached earlier values.
     HTTP/CSP locks require a fresh load (bypass cache).</div>
 
-  <h2>Recommended — on by default</h2>
+  <h2>Recommended - on by default</h2>
   <div id="safe"></div>
 
-  <h2>Opt-in / experimental — off by default</h2>
+  <h2>Opt-in / experimental - off by default</h2>
   <div id="risky"></div>
   <div class="warn">
     Timezone and language spoofing can misdate calendars, bookings and delivery
@@ -72,7 +73,7 @@
   <div id="paused-sites" aria-live="polite"></div>
   <button id="resume-all" type="button" hidden>Resume API patches on all sites…</button>
 
-  <h2>Global lockdown — experimental, extreme breakage</h2>
+  <h2>Global lockdown - experimental, extreme breakage</h2>
   <div class="warn">
     All off by default. Browser-enforced rules, not fake API values. These switches apply globally to eligible
     HTTP(S) pages and requests, including API-paused sites. Many sites become static or blank.
@@ -87,7 +88,7 @@
   <p class="d">Per-site API pause does not disable global locks. Turning them off only changes
     future loads; reload affected tabs. If rule removal fails, disable the extension in about:addons.</p>
   <p id="save-error" role="alert"></p>
-  <div id="saved" role="status">Saved — reload affected pages</div>
+  <div id="saved" role="status">Saved - reload affected pages</div>
   <script src="lockdown.js"></script>
   <script src="options.js"></script>
 </body>

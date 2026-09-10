@@ -18,6 +18,31 @@
     font-size: 11px; opacity: .65;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .status { display: flex; gap: 6px; align-items: center; margin-top: 7px; flex-wrap: wrap; }
+  .pill {
+    font-size: 11px; font-weight: 600; letter-spacing: .3px;
+    padding: 2px 9px; border-radius: 99px; border: 1px solid transparent;
+  }
+  .pill.protected {
+    background: color-mix(in srgb, #2fa36b 18%, transparent);
+    border-color: color-mix(in srgb, #2fa36b 45%, transparent);
+    color: light-dark(#1d7a4c, #5ecf98);
+  }
+  .pill.paused {
+    background: color-mix(in srgb, #d98b2b 18%, transparent);
+    border-color: color-mix(in srgb, #d98b2b 45%, transparent);
+    color: light-dark(#9c5e0e, #eec27f);
+  }
+  .pill.lockdown {
+    background: color-mix(in srgb, #2b5fd9 16%, transparent);
+    border-color: color-mix(in srgb, #2b5fd9 45%, transparent);
+    color: light-dark(#2b5fd9, #8fb0ff);
+  }
+  .pill.neutral {
+    background: color-mix(in srgb, CanvasText 9%, transparent);
+    border-color: color-mix(in srgb, CanvasText 20%, transparent);
+    opacity: .85;
+  }
   section { padding: 11px 14px; }
   .row {
     display: flex; justify-content: space-between; align-items: baseline;
@@ -32,19 +57,25 @@
     background: color-mix(in srgb, CanvasText 6%, transparent); color: inherit;
   }
   button:hover { background: color-mix(in srgb, CanvasText 12%, transparent); }
+  button:focus-visible, a:focus-visible { outline: 2px solid #2b5fd9; outline-offset: 1px; }
+  #allow:not(.on):not(:disabled) { border-color: color-mix(in srgb, #2b5fd9 55%, transparent); }
   button.on { border-color: #d98b2b; background: color-mix(in srgb, #d98b2b 18%, transparent); }
   .foot { padding: 0 14px 12px; }
-  a { color: inherit; font-size: 11px; opacity: .7; }
+  a { color: light-dark(#2b5fd9, #8fb0ff); font-size: 11px; opacity: .85; }
   #policy-status, #action-error, .note { font-size: 11px; overflow-wrap: anywhere; }
   #action-error { color: #d34242; }
   h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
-       opacity: .55; margin: 0 0 6px; font-weight: 600; }
+       color: light-dark(#2b5fd9, #8fb0ff); opacity: .9; margin: 0 0 6px; font-weight: 600; }
 </style>
 </head>
 <body>
   <header>
     <h1>Fingerprint Damper</h1>
-    <div class="origin" id="origin">—</div>
+    <div class="origin" id="origin">-</div>
+    <div class="status">
+      <span id="status-pill" class="pill neutral">Loading…</span>
+      <span id="lockdown-pill" class="pill lockdown" hidden></span>
+    </div>
   </header>
 
   <section>

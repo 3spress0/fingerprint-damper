@@ -96,7 +96,7 @@ const actual = [];
 (function walk(dir) {
   for (const e of fs.readdirSync(dir).sort()) {
     const p = path.join(dir, e);
-    const rel = path.relative(root, p);
+    const rel = path.relative(root, p).split(path.sep).join('/');
     if (fs.statSync(p).isDirectory()) { walk(p); continue; }
     if (rel.startsWith('.git') || rel.startsWith('test') || rel.startsWith('docs') ||
         rel === 'package.sh' || rel === 'web-ext-config.cjs' || rel.startsWith('scripts/')) continue;

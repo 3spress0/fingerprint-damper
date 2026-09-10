@@ -1,4 +1,4 @@
-/* Fingerprint Damper — API-level anti-fingerprinting for Firefox.
+/* Fingerprint Damper - API-level fingerprint damping for Firefox.
  * Copyright (C) 2026 espress0
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
@@ -110,7 +110,7 @@ const rectHost = document.createElement('div');
 try {
   rectHost.style.cssText = 'position:absolute;left:-10000px;top:-10000px;width:180px;visibility:hidden;font:16px serif';
   const text = document.createElement('span');
-  text.textContent = 'Client rect fingerprint probe — wrapped text 0123456789';
+  text.textContent = 'Client rect fingerprint probe - wrapped text 0123456789';
   rectHost.appendChild(text);
   document.body.appendChild(rectHost);
   const rectHash = (node) => {

@@ -1,4 +1,4 @@
-/* Fingerprint Damper — API-level anti-fingerprinting for Firefox.
+/* Fingerprint Damper - API-level fingerprint damping for Firefox.
  * Copyright (C) 2026 espress0
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
@@ -68,11 +68,11 @@
       const li = document.createElement('li');
       try {
         await run();
-        li.textContent = 'PASS — ' + name;
+        li.textContent = 'PASS - ' + name;
         li.className = 'pass';
         results.push({ name, passed: true });
       } catch (error) {
-        li.textContent = (error.skipped ? 'SKIP — ' : 'FAIL — ') + name + ': ' + error.message;
+        li.textContent = (error.skipped ? 'SKIP - ' : 'FAIL - ') + name + ': ' + error.message;
         li.className = error.skipped ? 'skip' : 'fail';
         results.push({ name, passed: error.skipped ? null : false, skipped: !!error.skipped, error: error.message });
       }
